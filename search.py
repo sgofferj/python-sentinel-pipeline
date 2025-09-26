@@ -53,20 +53,14 @@ def S2_search(boxes):
             productType=S2_PRODUCTTYPE,
         )
 
-        print(f'Found {len(searchResult["features"])} products since {S2_STARTDATE}.')
-
         filelist = []
         for feature in searchResult["features"]:
             fileID = feature["id"]
             fileName = feature["properties"]["title"]
-            print(
-                feature["properties"]["published"],
-                fileName,
-                feature["properties"]["cloudCover"],
-                fileID,
-            )
+            print(f"{fileName}, {feature["properties"]["cloudCover"]}% cloud cover")
             filelist.append({fileID: fileName})
         result.update({box: filelist})
+        print(f'Found {len(searchResult["features"])} products since {S2_STARTDATE}.')
         print()
     return result
 
@@ -75,11 +69,3 @@ if __name__ == "__main__":
     print("----- Search-pipeline only -----")
     boxes = func.getBoxes(S2_BOX)
     searchresult = S2_search(boxes)
-    print("\n----- Result -----")
-    for box in searchresult:
-        print(f"Search box: {box}")
-        print("Files:")
-        for files in searchresult[box]:
-            for fileid in files:
-                print(fileid, files[fileid])
-        print()

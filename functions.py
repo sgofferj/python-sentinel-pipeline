@@ -118,10 +118,13 @@ def writeTiffRGB(ds, profile, name):
         compress="DEFLATE",
         driver="GTiff",
     )
-    print(ds.shape)
     with rio.open(f"{name}.tif", "w", **profile) as dds:
         dds.write(ds)
         dds.close()
+    with rio.open(f"{name}.tif", "r+", **profile) as dds:
+        mask = np.ones((dds.height, dds.width), dtype=np.uint8)
+        mask[dds.read(1) == 0] = 0
+        dds.write_mask(mask)
 
 
 def S2_TCI(ds, name, box=None):
