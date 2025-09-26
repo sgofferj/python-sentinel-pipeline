@@ -76,6 +76,6 @@ Assuming you read the caution above, here is how you can try the project out.
 4. Activate the virtual environment with `source venv/bin/activate`
 5. Install the required python modules with `pip install -r requirements.txt`
 6. Copy .env.example to .env and edit according to your needs
-7. Test the pipeline with `python search.py`. If that goes through and show you results,
+7. Test the pipeline with `python search.py`. If that goes through and shows you results,
    you can run the pipeline, otherwise, check your config.
 8. Run the pipeline with `python s2pipeline.py`
