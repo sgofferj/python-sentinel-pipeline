@@ -53,15 +53,15 @@ The following values are supported and can be provided either as environment var
 
 ### Sentinel 2 pipeline
 
-| Variable       | Default    | Mandatory | Purpose                                                                                                                                            |
-| -------------- | ---------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| S2_BOX         | empty      | yes       | Box from which to search products in format East, South, West, North. Suitable boxes can be created e.g. with [bbox finder](http://bboxfinder.com). |
-| S2_CLOUDCOVER  | 5          | no        | Maximum cloud cover                                                                                                                                |
-| S2_STARTDATE   | yesterday  | no        | Start date of the search                                                                                                                           |
-| S2_MAXRECORDS  | 5          | no        | Maximum amount of products to return                                                                                                               |
-| S2_SORTPARAM   | startDate  | no        | Which parameter to sort the results by                                                                                                             |
-| S2_SORTORDER   | descending | no        | Which direction the results should be sorted                                                                                                       |
-| S2_PRODUCTTYPE | L2A        | no        | Which product type to search for                                                                                                                   |
+| Variable       | Default    | Mandatory | Purpose                                                                                                                                                                                             |
+| -------------- | ---------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S2_BOX         | empty      | yes       | Box from which to search products in format East, South, West, North. E.g. "24.461060,60.081284,25.455322,60.348696". Suitable boxes can be created e.g. with [bbox finder](http://bboxfinder.com). |
+| S2_CLOUDCOVER  | 5          | no        | Maximum cloud cover                                                                                                                                                                                 |
+| S2_STARTDATE   | yesterday  | no        | Start date of the search                                                                                                                                                                            |
+| S2_MAXRECORDS  | 5          | no        | Maximum amount of products to return                                                                                                                                                                |
+| S2_SORTPARAM   | startDate  | no        | Which parameter to sort the results by                                                                                                                                                              |
+| S2_SORTORDER   | descending | no        | Which direction the results should be sorted                                                                                                                                                        |
+| S2_PRODUCTTYPE | L2A        | no        | Which product type to search for                                                                                                                                                                    |
 
 ## Usage
 
