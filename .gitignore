@@ -1,0 +1,14 @@
+__pycache__
+venv
+.env
+*.ipynb*
+*.pem
+*.key
+*.json
+*.xml
+*.json
+*.tif
+.env
+temp
+data
+test.py
