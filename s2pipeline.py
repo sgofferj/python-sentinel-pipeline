@@ -29,7 +29,7 @@ load_dotenv()
 
 S2_BOX = os.getenv("S2_BOX")
 S2_PRODUCTTYPE = os.getenv("S2_PRODUCTTYPE", default="L2A")
-S2_CLIP = os.getenv("S2_CLIP", default=false)
+S2_CLIP = os.getenv("S2_CLIP", default=False)
 
 boxes = func.getBoxes(S2_BOX)
 searchresult = S2_search(boxes)
