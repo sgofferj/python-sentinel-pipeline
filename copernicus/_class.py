@@ -145,6 +145,9 @@ class connect:
         """Downloads a dataset from Copernicus"""
         url = f"https://download.dataspace.copernicus.eu/download/{uuid}"
         headers = {"Authorization": f"Bearer {self.token}"}
+        r = req.get(url, headers=headers, stream=True)
         with open(f"{directory}/{filename}.zip", "wb") as file:
-            r = req.get(url, headers=headers)
-            file.write(r.content)
+            for chunk in r.iter_content(chunk_size=10 * 1024):
+                file.write(chunk)
+            file.close()
+        del r

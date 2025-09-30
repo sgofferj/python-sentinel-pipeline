@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# constants.py from https://github.com/sgofferj/python-sentinel-pipeline/copernicus
+# constants.py from https://github.com/sgofferj/python-sentinel-pipeline
 #
 # Copyright Stefan Gofferje
 #
@@ -19,7 +19,7 @@ import os
 
 # ----- Directories -------------------------------------------------
 DLDIR = "temp"
-OUTDIR = "data"
+OUTDIR = "output"
 
 if not os.path.exists(DLDIR):
     os.makedirs(DLDIR)
@@ -28,8 +28,11 @@ if not os.path.exists(OUTDIR):
     os.makedirs(OUTDIR)
 
 # ----- Percentile min/max for scaling ------------------------------
-PCT_MIN = 0.5
-PCT_MAX = 99.5
+S1_PCT_MIN = 2
+S1_PCT_MAX = 98
+
+S2_PCT_MIN = 2
+S2_PCT_MAX = 98
 
 # ----- Sentinel 2 subdatasets --------------------------------------
 DS_10m = 0  # 10m resolution bands
@@ -64,26 +67,3 @@ BAND_BLU = 3  # Blue band (490nm)
 # ----- Sentinel 1 subdatasets --------------------------------------
 DS_VV = 1
 DS_VH = 2
-
-# ----- Colormaps ---------------------------------------------------
-COLORMAP_NDVI = {
-    102: (191, 191, 191, 255),
-    114: (173, 173, 173, 255),
-    127: (255, 255, 224, 255),
-    130: (255, 249, 204, 255),
-    133: (237, 232, 181, 255),
-    137: (222, 217, 156, 255),
-    140: (204, 199, 130, 255),
-    143: (189, 184, 107, 255),
-    146: (176, 194, 97, 255),
-    149: (163, 204, 89, 255),
-    153: (145, 191, 82, 255),
-    159: (128, 179, 71, 255),
-    165: (112, 163, 64, 255),
-    172: (97, 150, 54, 255),
-    178: (79, 138, 46, 255),
-    184: (64, 125, 36, 255),
-    191: (48, 110, 28, 255),
-    197: (33, 97, 18, 255),
-    204: (15, 84, 10, 255),
-}

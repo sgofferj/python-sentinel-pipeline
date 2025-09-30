@@ -10,5 +10,5 @@ venv
 *.tif
 .env
 temp
-data
+output
 test.py
