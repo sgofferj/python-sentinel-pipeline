@@ -349,26 +349,25 @@ def pipeline(name, uri, processes):
     """The Sentinel 1 pipeline itself"""
     prepare(uri)
     if "VV" in processes:
-        calc_VV(name)
+        calc_VV(f"{c.DIRS["S1_VV"]}/{name}")
     if "VH" in processes:
-        calc_VH(name)
+        calc_VH(f"{c.DIRS["S1_VH"]}/{name}")
     if "RATIOVVVH" in processes:
-        calc_ratiovvvh(name)
+        calc_ratiovvvh(f"{c.DIRS["S1_RATIOVVVH"]}/{name}")
     if "RATIOVHVV" in processes:
-        calc_ratiovhvv(name)
+        calc_ratiovhvv(f"{c.DIRS["S1_RATIOVHVV"]}/{name}")
     if "PRODUCT" in processes:
-        calc_product(name)
+        calc_product(f"{c.DIRS["S1_PRODUCTVVVH"]}/{name}")
     if "DIFFERENCE" in processes:
-        calc_difference(name)
+        calc_difference(f"{c.DIRS["S1_DIFFVVVH"]}/{name}")
     cleanup()
 
 
 def runPipeline(ds, processes):
     """Runs the Sentinel 1 pipeline"""
     desc = gdal.Info(ds, format="json")["description"]
-    productUri = f"{c.DLDIR}/{get_uri(desc)}"
+    productUri = f"{c.DIRS["DL"]}/{get_uri(desc)}"
     times = get_data(desc)
     name = f"S1_{times}"
 
-    name = f"{c.OUTDIR}/{name}"
     pipeline(name, productUri, processes)

@@ -18,14 +18,26 @@
 import os
 
 # ----- Directories -------------------------------------------------
-DLDIR = "temp"
-OUTDIR = "output"
+DIRS = {
+    "DL": "temp",
+    "OUT": "output",
+    "S1": "output/s1",
+    "S2": "output/s2",
+    "S1_VV": "output/s1/vv",
+    "S1_VH": "output/s1/vh",
+    "S1_RATIOVVVH": "output/s1/ratiovvvh",
+    "S1_RATIOVHVV": "output/s1/ratiovhvv",
+    "S1_PRODUCTVVVH": "output/s1/productvvvh",
+    "S1_DIFFVVVH": "output/s1/diffvvvh",
+    "S2_TCI": "output/s2/tci",
+    "S2_NIRFC": "output/s2/nirfc",
+    "S2_AP": "output/s2/ap",
+    "S2_NDVI": "output/s2/ndvi",
+}
 
-if not os.path.exists(DLDIR):
-    os.makedirs(DLDIR)
-
-if not os.path.exists(OUTDIR):
-    os.makedirs(OUTDIR)
+for dir in DIRS:
+    if not os.path.exists(DIRS[dir]):
+        os.makedirs(DIRS[dir])
 
 # ----- Percentile min/max for scaling ------------------------------
 S1_PCT_MIN = 2

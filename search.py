@@ -52,7 +52,7 @@ S2_CLIP = os.getenv("S2_CLIP", default=True)
 
 def readlog(sat):
     if USE_LOG:
-        logfile = f"{c.DLDIR}/{sat}_last.json"
+        logfile = f"{c.DIRS["DL"]}/{sat}_last.json"
         if os.path.exists(logfile):
             with open(logfile) as f:
                 d = json.load(f)
@@ -66,7 +66,7 @@ def readlog(sat):
 
 def writelog(sat, data):
     if USE_LOG:
-        logfile = f"{c.DLDIR}/{sat}_last.json"
+        logfile = f"{c.DIRS["DL"]}/{sat}_last.json"
         data = {"time": func.this_moment(), "files": data}
         d = json.dumps(data, indent=4)
         with open(logfile, "w") as f:

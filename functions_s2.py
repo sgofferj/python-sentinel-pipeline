@@ -136,13 +136,13 @@ def calc_NDVI(ds, name):
 def pipeline(ds, name, processes):
     """The Sentinel 2 pipeline itself"""
     if "TCI" in processes:
-        calc_TCI(ds, name)
+        calc_TCI(ds, f"{c.DIRS["S2_TCI"]}/{name}")
     if "NIRFC" in processes:
-        calc_NIRFC(ds, name)
+        calc_NIRFC(ds, f"{c.DIRS["S2_NRIFC"]}/{name}")
     if "AP" in processes:
-        calc_AP(ds, name)
+        calc_AP(ds, f"{c.DIRS["S2_AP"]}/{name}")
     if "NDVI" in processes:
-        calc_NDVI(ds, name)
+        calc_NDVI(ds, f"{c.DIRS["S2_NDVI"]}/{name}")
 
 
 def runPipeline(ds, processes):
@@ -151,5 +151,5 @@ def runPipeline(ds, processes):
     utm = get_utm(productURI)
     time = get_time(productURI) + "Z"
 
-    name = f"{c.OUTDIR}/{utm}-{time}"
+    name = f"{utm}-{time}"
     pipeline(ds, name, processes)
