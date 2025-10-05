@@ -55,14 +55,14 @@ def downloadProducts(searchresult):
         for files in searchresult[box]:
             for fileid in files:
                 filename = files[fileid]
-                if os.path.exists(f"{c.DLDIR}/{filename}"):
+                if os.path.exists(f"{c.DIRS["DL"]}/{filename}"):
                     print(f"Already have {filename}, not downloading it again.")
                 else:
                     print(f"Downloading {filename}...")
                     mycop.refreshToken()
-                    mycop.download(fileid, filename, c.DLDIR)
+                    mycop.download(fileid, filename, c.DIRS["DL"])
                     time.sleep(1)  # Sleep a sec to let the filesystem settle
-                    downloadedZip = f"{c.DLDIR}/{filename}.zip"
+                    downloadedZip = f"{c.DIRS["DL"]}/{filename}.zip"
                     print(f"Unzipping {downloadedZip}...")
                     try:
                         zip_ref = zipfile.ZipFile(downloadedZip, "r")
@@ -70,7 +70,7 @@ def downloadProducts(searchresult):
                         print("Problem unzipping:", error)
                     else:
                         try:
-                            zip_ref.extractall(c.DLDIR)
+                            zip_ref.extractall(c.DIRS["DL"])
                         except Exception as error:
                             print("Problem unzipping:", error)
                         os.remove(downloadedZip)
@@ -87,7 +87,7 @@ def pipeline_S1():
             for files in searchresult[box]:
                 for fileid in files:
                     filename = files[fileid]
-                    manifest = f"{c.DLDIR}/{filename}/manifest.safe"
+                    manifest = f"{c.DIRS["DL"]}/{filename}/manifest.safe"
                     if os.path.exists(manifest):
                         print(manifest)
                         ds = gdal.Open(manifest)
@@ -106,7 +106,7 @@ def pipeline_S2():
             for files in searchresult[box]:
                 for fileid in files:
                     filename = files[fileid]
-                    manifest = f"{c.DLDIR}/{filename}/MTD_MSI{S2_PRODUCTTYPE}.xml"
+                    manifest = f"{c.DIRS["DL"]}/{filename}/MTD_MSI{S2_PRODUCTTYPE}.xml"
                     if os.path.exists(manifest):
                         ds = gdal.Open(manifest)
                         s2.runPipeline(ds, S2_PROCESSES)
