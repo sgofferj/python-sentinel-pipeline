@@ -37,6 +37,7 @@ DIRS = {
 
 for dir in DIRS:
     if not os.path.exists(DIRS[dir]):
+        print(f"{DIRS[dir]} does not exist - creating...")
         os.makedirs(DIRS[dir])
 
 # ----- Percentile min/max for scaling ------------------------------
