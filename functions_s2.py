@@ -138,7 +138,7 @@ def pipeline(ds, name, processes):
     if "TCI" in processes:
         calc_TCI(ds, f"{c.DIRS["S2_TCI"]}/{name}")
     if "NIRFC" in processes:
-        calc_NIRFC(ds, f"{c.DIRS["S2_NRIFC"]}/{name}")
+        calc_NIRFC(ds, f"{c.DIRS["S2_NIRFC"]}/{name}")
     if "AP" in processes:
         calc_AP(ds, f"{c.DIRS["S2_AP"]}/{name}")
     if "NDVI" in processes:
