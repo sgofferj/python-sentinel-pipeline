@@ -30,7 +30,9 @@ import time
 
 load_dotenv()
 
-BOX = os.getenv("BOX")
+S1_BOX = os.getenv("S1_BOX")
+S2_BOX = os.getenv("S2_BOX")
+
 PIPELINES = os.getenv("PIPELINES", default="S1,S2")
 PIPELINES = PIPELINES.split(",")
 
@@ -46,7 +48,8 @@ USERNAME = os.getenv("COPERNICUS_USERNAME")
 PASSWORD = os.getenv("COPERNICUS_PASSWORD")
 mycop = cop.connect(USERNAME, PASSWORD)
 
-boxes = func.getBoxes(BOX)
+s1_boxes = func.getBoxes(S1_BOX)
+s2_boxes = func.getBoxes(S2_BOX)
 
 
 def downloadProducts(searchresult):
@@ -78,7 +81,7 @@ def downloadProducts(searchresult):
 
 
 def pipeline_S1():
-    numfiles, searchresult = search_s1(boxes)
+    numfiles, searchresult = search_s1(s1_boxes)
     if numfiles > 0:
         downloadProducts(searchresult)
         print("\nStarting pipeline...")
@@ -97,7 +100,7 @@ def pipeline_S1():
 
 
 def pipeline_S2():
-    numfiles, searchresult = search_s2(boxes)
+    numfiles, searchresult = search_s2(s2_boxes)
     if numfiles > 0:
         downloadProducts(searchresult)
         print("\nStarting pipeline...")

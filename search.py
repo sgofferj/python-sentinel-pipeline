@@ -24,7 +24,8 @@ import json
 
 load_dotenv()
 
-BOX = os.getenv("BOX")
+S1_BOX = os.getenv("S1_BOX")
+S2_BOX = os.getenv("S2_BOX")
 
 USERNAME = os.getenv("COPERNICUS_USERNAME")
 PASSWORD = os.getenv("COPERNICUS_PASSWORD")
@@ -169,8 +170,9 @@ def search_s2(boxes):
 
 if __name__ == "__main__":
     print("----- Search-pipeline only -----")
-    boxes = func.getBoxes(BOX)
+    boxes = func.getBoxes(S1_BOX)
     print("Sentinel 1")
     search_s1(boxes)
+    boxes = func.getBoxes(S2_BOX)
     print("Sentinel 2")
     search_s2(boxes)
