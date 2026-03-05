@@ -1,6 +1,6 @@
 # python-sentinel-pipeline
 
-(C) 2025 Stefan Gofferje
+(C) 2025-2026 Stefan Gofferje
 
 Licensed under the GNU General Public License V3 or later.
 
@@ -15,89 +15,56 @@ Licensed under the GNU General Public License V3 or later.
 
 ## Description
 
-This project is a fully automatic pipeline to download a set of satellite images from
-the [ESA Copernicus Dataspace Ecosystem (CDSE)](https://dataspace.copernicus.eu/) and do the post processing.
+This project is a fully automatic, high-precision pipeline to download and process satellite imagery from the [ESA Copernicus Dataspace Ecosystem (CDSE)](https://dataspace.copernicus.eu/). It is designed for OSINT (Open Source Intelligence) purposes, providing physically consistent imagery for change detection and multi-sensor fusion.
 
 ## Features
 
-### Sentinel 1 pipeline
+### Radiometric Consistency
+- **Absolute Physical Scaling:** Uses fixed physical units (dB for Sentinel-1, Reflectance for Sentinel-2) instead of dynamic stretching. This ensures that pixel values are consistent across different dates, a critical requirement for automated change detection.
 
-- Automatic search and download of imagery from a bounding box or list of bounding boxes
-- Automatic postprocessing
-  - Contrast normalization by percentile
-- Automatic creation of
-  - VV and VH greyscale images
-  - VV/VH and VH/VV ratio pseudocolor images
-  - VV\*VH product pseudocolor images
-  - VV-VH difference pseudocolor images
+### Sentinel 1 Pipeline (SAR)
+- **Automatic Search & Download:** Supports GRD IW products.
+- **Calibration & Denoising:** Custom `S1Calibrator` for radiometric calibration (Sigma0) and thermal noise removal.
+- **Footprint Masking:** High-precision alpha masks derived from `manifest.safe`.
+- **Products:**
+  - **VV / VH:** Absolute dB scaled greyscale images (-30 to 0 dB).
+  - **RATIOVVVH:** Pseudocolor composite (Red=VV, Green=VH, Blue=Ratio).
+  - **NDPI:** Normalized Difference Polarization Index.
 
-### Sentinel 2 pipeline
+### Sentinel 2 Pipeline (Optical)
+- **Level-2A Optimized:** Focuses on Bottom-of-Atmosphere (BOA) reflectance.
+- **Winter/Snow Optimization:** Fixed physical clipping (0-0.3 reflectance) with Gamma 2.2 correction to preserve forest detail in high-latitude winter conditions.
+- **OSINT Products (10m):**
+  - **TCI / NIRFC / SWIR AP:** Standard and False Color composites.
+  - **NDVI:** Normalized Difference Vegetation Index.
+  - **NDRE (Red Edge):** High-sensitivity vegetation stress detection; peers through canopy to find "biological disturbances" (trails, hidden bases, camouflage).
+  - **NDBI (Built-Up):** Highlights concrete, asphalt, and new infrastructure.
+  - **NBR (Burn Ratio):** Identifies scorched earth or kinetic impacts.
+  - **CAMO Composite:** Specialized Red(NDVI), Green(NDRE), Blue(TCI-Green) layer to reveal cut-foliage camouflage.
 
-- Automatic search and download of imagery from a bounding box or list of bounding boxes
-- Automatic postprocessing
-  - Contrast normalization by percentile
-- Automatic creation of
-  - True color images
-  - NIR false color images (red=NIR, green=green, blue=blue)
-  - Atmospheric penetration images (red=2190nm, green=1610nm, blue=NIR)
-  - NDVI images
+### Multi-Sensor Fusion
+- **Spatial Matchmaker:** Automated logic to identify temporal (+/- 24h) and spatial overlaps between processed S1 and S2 products.
+- **Surgical Fusion (Radar-over-Optical):** "Zero-Warp" high-precision burn-in of high-intensity S1 VH backscatter (>-10dB) into S2 TCI base. The output is surgically clipped to the exact overlap extent.
+- **Life-vs-Machine:** Fuses S1-VH (Structure), S2-NDVI (Health), and S2-NDRE (Stress) into a single RGB product to distinguish human activity from natural forest.
 
 ## Configuration
 
-The following values are supported and can be provided either as environment variables or through an .env-file.
-
-### Connection
-
-| Variable            | Default | Mandatory | Purpose       |
-| ------------------- | ------- | --------- | ------------- |
-| COPERNICUS_USERNAME | empty   | yes       | CDSE username |
-| COPERNICUS_PASSWORD | empty   | yes       | CDSE password |
+The following values are supported in the `.env` file.
 
 ### General
+| Variable  | Purpose |
+| --------- | ------- |
+| USE_LOG   | Enable search log to prevent re-downloading same products. |
+| PIPELINES | Which pipelines to run ("S1,S2"). |
 
-| Variable  | Default | Mandatory | Purpose                                                                                                                                                                                                                                                  |
-| --------- | ------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| USE_LOG   | True    | no        | Read and write search log. If True, the search will read the date and time of the last search from the log and use that as startDate. It will also read the list of file UUIDs from the last search and ignore them if they come up in the search again. |
-| PIPELINES | "S1,S2" | no        | Which pipelines to run, S1 = Sentinel 1, S2 = Sentinel 2                                                                                                                                                                                                 |
-
-### Sentinel 1 pipeline
-
-| Variable       | Default           | Mandatory | Purpose                                                                                                                                                             |
-| -------------- | ----------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| S1_BOX         | empty             | yes       | Box from which to search products in format East, South, West, North. E.g. "24.461060, 60.081284, 25.455322, 60.348696". Suitable boxes can be created e.g. with [bbox finder](http://bboxfinder.com). |
-| S1_MAXRECORDS  | 5                 | no        | Maximum amount of products to return                                                                                                                                |
-| S1_PROCESSES   | "VV,VH,RATIOVVVH" | no        | Which post processing processes to run. VV = VV band greyscale, VH = VH band greyscale, RATIOVVVH = pseudocolor VV,VH,VV/VH, RATIOVHVV = pseudocolor VV,VH,VH/VV    |
-| S1_PRODUCTTYPE | GRD               | no        | Which product type to search for. Stay away from SLC data! The files are extremely huge and I have not been able to get them to process without running out of RAM. |
-| S1_SORTORDER   | descending        | no        | Which direction the results should be sorted                                                                                                                        |
-| S1_SORTPARAM   | startDate         | no        | Which parameter to sort the results by                                                                                                                              |
-| S1_STARTDATE   | yesterday         | no        | Start date of the search                                                                                                                                            |
-
-### Sentinel 2 pipeline
-
-| Variable       | Default             | Mandatory | Purpose                                                                                                                                                                    |
-| -------------- | ------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| S2_BOX         | empty               | yes       | Box from which to search products in format East, South, West, North. E.g. "24.461060, 60.081284, 25.455322, 60.348696". Suitable boxes can be created e.g. with [bbox finder](http://bboxfinder.com). |
-| S2_CLOUDCOVER  | 5                   | no        | Maximum cloud cover                                                                                                                                                        |
-| S2_MAXRECORDS  | 5                   | no        | Maximum amount of products to return                                                                                                                                       |
-| S2_PROCESSES   | "TCI,NIRFC,AP,NDVI" | no        | Which post processing processes to run. TCI = True color image, NIRFC = NIR false color image, AP = atmospheric penetration, NDVI = Normalized Difference Vegetation Index |
-| S2_PRODUCTTYPE | L2A                 | no        | Which product type to search for. L2A gets the best results. L1C works too but the image quality isn't that great.                                                         |
-| S2_SORTORDER   | descending          | no        | Which direction the results should be sorted                                                                                                                               |
-| S2_SORTPARAM   | startDate           | no        | Which parameter to sort the results by                                                                                                                                     |
-| S2_STARTDATE   | yesterday           | no        | Start date of the search                                                                                                                                                   |
+### Sentinel 1 / 2
+Standard CDSE search parameters are supported: `_BOX`, `_STARTDATE`, `_MAXRECORDS`, `_PRODUCTTYPE`, `_SORTPARAM`, etc.
 
 ## Usage
 
-Assuming you read the caution above, here is how you can try the project out.
+1. Create a virtual environment: `python -m venv venv`
+2. Install dependencies: `pip install -r requirements.txt`
+3. Configure `.env` with your CDSE credentials.
+4. Run the pipeline: `python pipelines.py`
 
-> [!NOTE]
-> The instructions are for Linux only because I don't really use Windows
-
-1. Make sure, Python 3, pip and libgdal are installed
-2. Clone the repo to a convenient place
-3. Create a virtual environment with `python -m venv venv`
-4. Activate the virtual environment with `source venv/bin/activate`
-5. Install the required python modules with `pip install -r requirements.txt`
-6. Copy .env.example to .env and edit according to your needs
-7. Test the pipeline with `python search.py`. If that goes through and shows you results,
-   you can run the pipeline, otherwise, check your config.
-8. Run the pipeline with `python pipelines.py`
+Fused products and OSINT indices will be generated automatically in the `output/` directory if overlaps are found.

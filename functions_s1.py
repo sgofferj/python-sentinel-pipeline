@@ -17,12 +17,17 @@
 
 import constants as c
 import functions as func
+import denoise
+from s1_calibrator import S1Calibrator
 from osgeo import gdal
 import rasterio as rio
+from rasterio.enums import ColorInterp
 import numpy as np
 import re
 import os
-import shutil
+import gc
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
 
 gdal.UseExceptions()
 
@@ -42,332 +47,211 @@ def get_uri(name):
     return uri
 
 
-def get_percentiles(ds):
-    dataset = gdal.Open(ds)
-    array = dataset.ReadAsArray()
-    min = np.percentile(array, c.S1_PCT_MIN)
-    max = np.percentile(array, c.S1_PCT_MAX)
-    del array
-    del dataset
-    return min, max
-
-
-def get_minmax(ds):
-    dataset = gdal.Open(ds)
-    array = dataset.ReadAsArray()
-    min = np.min(array)
-    max = np.max(array)
-    del array
-    del dataset
-    return min, max
-
-
-# ----- Sentinel 1 pipeline functions -------------------------------
-
-
 def prepare(ds):
-    dsvv = f"SENTINEL1_CALIB:UNCALIB:{ds}/manifest.safe:IW_VV:AMPLITUDE"
-    dsvh = f"SENTINEL1_CALIB:UNCALIB:{ds}/manifest.safe:IW_VH:AMPLITUDE"
-    print("Extracting bands and reprojecting...")
+    """Calibrates, denoises, and reprojects S1 data to Float32 Sigma0 + Alpha."""
+    cal = S1Calibrator(ds)
+    print("Calibrating and denoising bands (with alpha mask)...")
     print("VV")
-    gdal.Warp("/tmp/vv.tif", dsvv, dstSRS="EPSG:3857")
+    cal.calibrate("VV", "/tmp/vv_raw.tif", block_size=1024)
+    gc.collect()
     print("VH")
-    gdal.Warp("/tmp/vh.tif", dsvh, dstSRS="EPSG:3857")
-    print("Scaling...")
+    cal.calibrate("VH", "/tmp/vh_raw.tif", block_size=1024)
+    gc.collect()
+
+    print("Reprojecting to EPSG:3857 using optimized gdal.Warp...")
+
+    cores = max(1, multiprocessing.cpu_count() // 2)
+
+    warp_options = gdal.WarpOptions(
+        dstSRS="EPSG:3857",
+        multithread=True,
+        warpMemoryLimit=512,
+        warpOptions=[f"NUM_THREADS={cores}"],
+    )
+
     print("VV")
-    min, max = get_percentiles("/tmp/vv.tif")
-    gdal.Translate(
-        "/tmp/vvn.tif",
-        "/tmp/vv.tif",
-        outputType=gdal.gdalconst.GDT_Byte,
-        scaleParams=[[min, max, 0, 255]],
-    )
+    gdal.Warp("/tmp/vv.tif", "/tmp/vv_raw.tif", options=warp_options)
+    os.remove("/tmp/vv_raw.tif")
+    gc.collect()
+
     print("VH")
-    min, max = get_percentiles("/tmp/vh.tif")
-    gdal.Translate(
-        "/tmp/vhn.tif",
-        "/tmp/vh.tif",
-        outputType=gdal.gdalconst.GDT_Byte,
-        scaleParams=[[min, max, 0, 255]],
-    )
+    gdal.Warp("/tmp/vh.tif", "/tmp/vh_raw.tif", options=warp_options)
+    os.remove("/tmp/vh_raw.tif")
+    gc.collect()
 
 
 def cleanup():
-    os.remove("/tmp/vv.tif")
-    os.remove("/tmp/vh.tif")
-    os.remove("/tmp/vvn.tif")
-    os.remove("/tmp/vhn.tif")
+    for f in ["/tmp/vv_raw.tif", "/tmp/vh_raw.tif", "/tmp/vv.tif", "/tmp/vh.tif"]:
+        if os.path.exists(f):
+            os.remove(f)
 
 
-def calc_VV(name):
-    """Creates Sentinel 1 VV image"""
-    name = f"{name}-VV"
-    print(name)
-    if not func.outputExists(name):
-        shutil.copyfile("/tmp/vvn.tif", f"{name}.tif")
-        with rio.open(f"{name}.tif") as sds:
-            profile = sds.profile
-            sds.close()
-        func.writeMask(name, profile)
-
-    else:
-        print(f"{name} exists, not calculating it again.")
+def _build_ov_task(path):
+    """Helper for parallel overview building."""
+    print(f"Building overviews for {os.path.basename(path)}...")
+    with rio.open(path, "r+") as ds:
+        ds.build_overviews([2, 4, 8, 16, 32], rio.enums.Resampling.average)
+    return path
 
 
-def calc_VH(name):
-    """Creates Sentinel 1 VH image"""
-    name = f"{name}-VH"
-    print(name)
-    if not func.outputExists(name):
-        shutil.copyfile("/tmp/vhn.tif", f"{name}.tif")
-        with rio.open(f"{name}.tif") as sds:
-            profile = sds.profile
-            sds.close()
-        func.writeMask(name, profile)
+def _render_internal(product_paths):
+    """Core single-pass rendering logic with parallel overview building."""
+    print("Starting optimized single-pass render...")
+    cores = max(1, multiprocessing.cpu_count() // 2)
 
-    else:
-        print(f"{name} exists, not calculating it again.")
+    # Pre-scale parameters
+    db_min = c.S1_dB_MIN
+    db_range = c.S1_dB_MAX - c.S1_dB_MIN
+    ratio_min = c.S1_RATIO_MIN
+    ratio_range = c.S1_RATIO_MAX - c.S1_RATIO_MIN
+    ndpi_min = c.S1_NDPI_MIN
+    ndpi_range = c.S1_NDPI_MAX - c.S1_NDPI_MIN
 
-
-def calc_ratiovvvh(name):
-    """Creates Sentinel 1 ratio image (VV/VH)"""
-    name = f"{name}-RATIOVVVH"
-    print(name)
-    if not func.outputExists(name):
-        with rio.open("/tmp/vvn.tif") as sds:
-            profile = sds.profile
-            vv = sds.read(1)
-            sds.close()
-        with rio.open("/tmp/vhn.tif") as sds:
-            vh = sds.read(1)
-            sds.close()
-        del sds
-
-        print("Calculating ratio VV/VH...")
-        ratio = np.zeros(vv.shape, dtype=rio.float32)
-        ratio = (vv / (vh + (vh == 0))).astype(rio.float32)
-
-        print("Writing ratio temp file")
-        profile.update(dtype=rio.float32, compress="deflate")
-        with rio.open("/tmp/ratio.tif", "w", **profile) as dds:
-            dds.write(ratio, indexes=1)
-            dds.close()
-        del ratio
-
-        print("Scaling ratio band...")
-        min, max = get_percentiles("/tmp/ratio.tif")
-        gdal.Translate(
-            "/tmp/ration.tif",
-            "/tmp/ratio.tif",
-            outputType=gdal.gdalconst.GDT_Byte,
-            scaleParams=[[min, max, 0, 255]],
+    with rio.open("/tmp/vv.tif") as vv_src, rio.open("/tmp/vh.tif") as vh_src:
+        profile = vv_src.profile.copy()
+        profile.update(
+            photometric="RGB",
+            count=4,
+            dtype=rio.uint8,
+            nodata=None,
+            compress="DEFLATE",
+            tiled=True,
+            blockxsize=256,
+            blockysize=256,
+            num_threads=cores,
         )
-        os.remove("/tmp/ratio.tif")
 
-        print("Merging bands...")
-        dataset = rio.open("/tmp/ration.tif")
-        ra = dataset.read(1)
-        del dataset
-        bands = np.array([vv, vh, ra])
-        del vv
-        del vh
-        del ra
+        dst_handles = {}
+        try:
+            for p, path in product_paths.items():
+                if not func.outputExists(path):
+                    h = rio.open(path + ".tif", "w", **profile)
+                    h.colorinterp = [
+                        ColorInterp.red,
+                        ColorInterp.green,
+                        ColorInterp.blue,
+                        ColorInterp.alpha,
+                    ]
+                    dst_handles[p] = h
 
-        print("Writing image...")
-        profile.update(driver="GTIFF", dtype=rio.uint8, count=3, compress="deflate")
-        func.writeTiffRGB(bands, profile, name)
-        del bands
-        func.writeMask(name, profile)
-        os.remove("/tmp/ration.tif")
-    else:
-        print(f"{name} exists, not calculating it again.")
+            if not dst_handles:
+                print("All requested products already exist.")
+                return
 
+            print(f"Rendering {list(dst_handles.keys())}...")
+            for _, window in vv_src.block_windows(1):
+                vv_s0 = vv_src.read(1, window=window)
+                vh_s0 = vh_src.read(1, window=window)
+                alpha = vv_src.read(2, window=window).astype(np.uint8)
 
-def calc_ratiovhvv(name):
-    """Creates Sentinel 1 ratio image (VH/VV)"""
-    name = f"{name}-RATIOVHVV"
-    print(name)
-    if not func.outputExists(name):
-        with rio.open("/tmp/vv.tif") as sds:
-            profile = sds.profile
-            vv = sds.read(1)
-            sds.close()
-        with rio.open("/tmp/vh.tif") as sds:
-            vh = sds.read(1)
-            sds.close()
-        del sds
+                # Standalone Denoising (Improved point target preservation for OSINT)
+                vv_denoised = denoise.refined_lee_filter(vv_s0, size=5)
+                vh_denoised = denoise.improved_lee_filter(vh_s0, size=3)
 
-        print("Calculating ratio VH/VV...")
-        ratio = np.zeros(vv.shape, dtype=rio.float32)
-        ratio = (vh / (vv + (vv == 0))).astype(rio.float32)
+                # Shared dB scaling
+                v_m = vv_denoised > 0
+                v_db = np.full_like(vv_denoised, db_min, dtype=np.float32)
+                v_db[v_m] = 10 * np.log10(vv_denoised[v_m])
+                s_vv = np.clip((v_db - db_min) / db_range * 255, 0, 255).astype(
+                    np.uint8
+                )
 
-        print("Writing ratio temp file")
-        profile.update(dtype=rio.float32, compress="deflate")
-        with rio.open("/tmp/ratio.tif", "w", **profile) as dds:
-            dds.write(ratio, indexes=1)
-            dds.close()
-        del ratio
+                h_m = vh_denoised > 0
+                h_db = np.full_like(vh_denoised, db_min, dtype=np.float32)
+                h_db[h_m] = 10 * np.log10(vh_denoised[h_m])
+                s_vh = np.clip((h_db - db_min) / db_range * 255, 0, 255).astype(
+                    np.uint8
+                )
 
-        print("Scaling ratio band...")
-        min, max = get_percentiles("/tmp/ratio.tif")
-        gdal.Translate(
-            "/tmp/ration.tif",
-            "/tmp/ratio.tif",
-            outputType=gdal.gdalconst.GDT_Byte,
-            scaleParams=[[min, max, 0, 255]],
-        )
-        os.remove("/tmp/ratio.tif")
+                if "VV" in dst_handles:
+                    dst_handles["VV"].write(
+                        np.stack([s_vv, s_vv, s_vv, alpha], axis=0), window=window
+                    )
+                if "VH" in dst_handles:
+                    dst_handles["VH"].write(
+                        np.stack([s_vh, s_vh, s_vh, alpha], axis=0), window=window
+                    )
 
-        print("Merging bands...")
-        dataset = rio.open("/tmp/ration.tif")
-        ra = dataset.read(1)
-        del dataset
-        bands = np.array([vv, vh, ra])
-        del vv
-        del vh
-        del ra
+                if "RATIOVVVH" in dst_handles:
+                    # Use Gamma Map for the noisy Ratio product
+                    ratio_raw = vv_s0 / (vh_s0 + 1e-9)
+                    ratio_denoised = denoise.gamma_map_filter(ratio_raw, size=5, looks=1)
+                    s_r = np.clip((ratio_denoised - ratio_min) / ratio_range * 255, 0, 255).astype(
+                        np.uint8
+                    )
+                    dst_handles["RATIOVVVH"].write(
+                        np.stack([s_vv, s_vh, s_r, alpha], axis=0), window=window
+                    )
 
-        print("Writing image...")
-        profile.update(driver="GTIFF", dtype=rio.uint8, count=3, compress="deflate")
-        func.writeTiffRGB(bands, profile, name)
-        del bands
-        func.writeMask(name, profile)
-        os.remove("/tmp/ration.tif")
-    else:
-        print(f"{name} exists, not calculating it again.")
+                if "NDPI" in dst_handles:
+                    # NDPI = (VV - VH) / (VV + VH)
+                    denom = vv_s0 + vh_s0
+                    r = np.zeros_like(vv_s0)
+                    m = denom != 0
+                    r[m] = (vv_s0[m] - vh_s0[m]) / denom[m]
+                    # Also apply Gamma Map logic to NDPI for consistency
+                    ndpi_denoised = denoise.gamma_map_filter(r, size=5, looks=1)
+                    s_r = np.clip((ndpi_denoised - ndpi_min) / ndpi_range * 255, 0, 255).astype(
+                        np.uint8
+                    )
+                    dst_handles["NDPI"].write(
+                        np.stack([s_vv, s_vh, s_r, alpha], axis=0), window=window
+                    )
 
+        finally:
+            output_paths = []
+            for h in dst_handles.values():
+                output_paths.append(h.name)
+                h.close()
 
-def calc_product(name):
-    """Creates Sentinel 1 product image"""
-    name = f"{name}-PRODUCT"
-    print(name)
-    if not func.outputExists(name):
-        with rio.open("/tmp/vv.tif") as sds:
-            profile = sds.profile
-            vv = sds.read(1)
-            sds.close()
-        with rio.open("/tmp/vh.tif") as sds:
-            vh = sds.read(1)
-            sds.close()
-        del sds
+            if output_paths:
+                print(f"Building overviews in parallel (throttled to 2 workers)...")
+                with ProcessPoolExecutor(max_workers=2) as executor:
+                    list(executor.map(_build_ov_task, output_paths))
 
-        print("Calculating product...")
-        product = np.zeros(vv.shape, dtype=rio.float32)
-        product = (vv * vh).astype(rio.float32)
-
-        print("Writing product temp file")
-        profile.update(dtype=rio.float32, compress="deflate")
-        with rio.open("/tmp/product.tif", "w", **profile) as dds:
-            dds.write(product, indexes=1)
-            dds.close()
-        del product
-
-        print("Scaling product band...")
-        min, max = get_percentiles("/tmp/product.tif")
-        gdal.Translate(
-            "/tmp/productn.tif",
-            "/tmp/product.tif",
-            outputType=gdal.gdalconst.GDT_Byte,
-            scaleParams=[[min, max, 0, 255]],
-        )
-        os.remove("/tmp/product.tif")
-
-        print("Merging bands...")
-        dataset = rio.open("/tmp/productn.tif")
-        pr = dataset.read(1)
-        del dataset
-        bands = np.array([vv, vh, pr])
-        del vv
-        del vh
-        del pr
-
-        print("Writing image...")
-        profile.update(driver="GTIFF", dtype=rio.uint8, count=3, compress="deflate")
-        func.writeTiffRGB(bands, profile, name)
-        del bands
-        func.writeMask(name, profile)
-        os.remove("/tmp/productn.tif")
-    else:
-        print(f"{name} exists, not calculating it again.")
-
-
-def calc_difference(name):
-    """Creates Sentinel 1 difference image"""
-    name = f"{name}-DIFFERENCE"
-    print(name)
-    if not func.outputExists(name):
-        with rio.open("/tmp/vv.tif") as sds:
-            profile = sds.profile
-            vv = sds.read(1)
-            sds.close()
-        with rio.open("/tmp/vh.tif") as sds:
-            vh = sds.read(1)
-            sds.close()
-        del sds
-
-        print("Calculating difference...")
-        difference = np.zeros(vv.shape, dtype=rio.float32)
-        difference = (abs(vv - vh)).astype(rio.float32)
-
-        print("Writing difference temp file")
-        profile.update(dtype=rio.float32, compress="deflate")
-        with rio.open("/tmp/difference.tif", "w", **profile) as dds:
-            dds.write(difference, indexes=1)
-            dds.close()
-        del difference
-
-        print("Scaling difference band...")
-        min, max = get_percentiles("/tmp/difference.tif")
-        gdal.Translate(
-            "/tmp/differencen.tif",
-            "/tmp/difference.tif",
-            outputType=gdal.gdalconst.GDT_Byte,
-            scaleParams=[[min, max, 0, 255]],
-        )
-        os.remove("/tmp/difference.tif")
-
-        print("Merging bands...")
-        dataset = rio.open("/tmp/differencen.tif")
-        diff = dataset.read(1)
-        del dataset
-        bands = np.array([vv, vh, diff])
-        del vv
-        del vh
-        del diff
-
-        print("Writing image...")
-        profile.update(driver="GTIFF", dtype=rio.uint8, count=3, compress="deflate")
-        func.writeTiffRGB(bands, profile, name)
-        del bands
-        func.writeMask(name, profile)
-        os.remove("/tmp/differencen.tif")
-    else:
-        print(f"{name} exists, not calculating it again.")
+            gc.collect()
 
 
 def pipeline(name, uri, processes):
     """The Sentinel 1 pipeline itself"""
     prepare(uri)
+
+    product_paths = {}
     if "VV" in processes:
-        calc_VV(f"{c.DIRS["S1_VV"]}/{name}")
+        product_paths["VV"] = f"{c.DIRS['S1_VV']}/{name}"
     if "VH" in processes:
-        calc_VH(f"{c.DIRS["S1_VH"]}/{name}")
+        product_paths["VH"] = f"{c.DIRS['S1_VH']}/{name}"
     if "RATIOVVVH" in processes:
-        calc_ratiovvvh(f"{c.DIRS["S1_RATIOVVVH"]}/{name}")
-    if "RATIOVHVV" in processes:
-        calc_ratiovhvv(f"{c.DIRS["S1_RATIOVHVV"]}/{name}")
-    if "PRODUCT" in processes:
-        calc_product(f"{c.DIRS["S1_PRODUCTVVVH"]}/{name}")
-    if "DIFFERENCE" in processes:
-        calc_difference(f"{c.DIRS["S1_DIFFVVVH"]}/{name}")
+        product_paths["RATIOVVVH"] = f"{c.DIRS['S1_RATIOVVVH']}/{name}"
+    if "NDPI" in processes:
+        product_paths["NDPI"] = f"{c.DIRS['S1_NDPI']}/{name}"
+
+    _render_internal(product_paths)
     cleanup()
 
 
 def runPipeline(ds, processes):
     """Runs the Sentinel 1 pipeline"""
     desc = gdal.Info(ds, format="json")["description"]
-    productUri = f"{c.DIRS["DL"]}/{get_uri(desc)}"
+    productUri = os.path.join(c.DIRS["DL"], get_uri(desc))
     times = get_data(desc)
     name = f"S1_{times}"
 
-    pipeline(name, productUri, processes)
+    # Smart Skip: If all requested products exist, don't even open the manifest
+    product_paths = {}
+    if "VV" in processes: product_paths["VV"] = os.path.join(c.DIRS['S1_VV'], name)
+    if "VH" in processes: product_paths["VH"] = os.path.join(c.DIRS['S1_VH'], name)
+    if "RATIOVVVH" in processes: product_paths["RATIOVVVH"] = os.path.join(c.DIRS['S1_RATIOVVVH'], name)
+    if "NDPI" in processes: product_paths["NDPI"] = os.path.join(c.DIRS['S1_NDPI'], name)
+    
+    all_exist = all(func.outputExists(p) for p in product_paths.values())
+    if all_exist:
+        print(f"  All S1 products for {name} already exist. Skipping heavy processing.")
+        return
+
+    # If we need to process, but already have the intermediate reprojected tifs in /tmp
+    # we can potentially skip prepare, but usually /tmp is cleared. 
+    # Let's check if the base bands (VV/VH) exist in output to avoid re-calibrating.
+    prepare(productUri)
+    _render_internal(product_paths)
+    cleanup()

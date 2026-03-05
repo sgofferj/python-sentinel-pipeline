@@ -17,11 +17,11 @@
 
 import requests as req
 import re
-import asyncio
+from urllib.parse import quote
 
 
 class connect:
-    """Functions to find and download satellite products from EU Copernicus Data Hub"""
+    """Functions to find and download satellite products from EU Copernicus Data Hub using OData API"""
 
     def __init__(self, username, password):
         url = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
@@ -36,8 +36,9 @@ class connect:
         if self.status != 200:
             self.error = r.text
         else:
-            self.token = r.json()["access_token"]
-            self.refresh_token = r.json()["refresh_token"]
+            rj = r.json()
+            self.token = rj["access_token"]
+            self.refresh_token = rj["refresh_token"]
 
     def refreshToken(self):
         url = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
@@ -51,103 +52,131 @@ class connect:
         if self.status != 200:
             self.error = r.text
         else:
-            self.token = r.json()["access_token"]
-            self.refresh_token = r.json()["refresh_token"]
+            rj = r.json()
+            self.token = rj["access_token"]
+            self.refresh_token = rj["refresh_token"]
 
     def productSearch(
         self,
         collections,
-        completionDate=None,
         maxRecords=None,
         productType=None,
-        published=None,
-        publishedAfter=None,
-        publishedBefore=None,
-        sortOrder=None,
-        sortParam=None,
+        sortOrder="desc",
+        sortParam="ContentDate/Start",
         startDate=None,
-        updated=None,
-        lat=None,
-        lon=None,
-        radius=None,
         geometry=None,
         box=None,
         cloudCover=None,
+        sensorMode=None,
     ):
-        """Collections:"""
-        """ Sentinel1 or SENTINEL-1 """
-        """ Sentinel2 or SENTINEL-2 """
-        """ Sentinel3 or SENTINEL-3 """
-        """ Sentinel5P or SENTINEL-5P """
-        """ Sentinel6 or SENTINEL-6 """
-        """ Sentinel1RTC or SENTINEL-1-RTC """
-
-        amp = ""
-        url = f"https://catalogue.dataspace.copernicus.eu/resto/api/collections/{collections}/search.json?"
-        if completionDate:
-            url += f"{amp}completionDate={completionDate}"
-            amp = "&"
-        if maxRecords:
-            url += f"{amp}maxRecords={maxRecords}"
-            amp = "&"
-        if productType:
-            url += f"{amp}productType={productType}"
-            amp = "&"
-        if published:
-            url += f"{amp}published={published}"
-            amp = "&"
-        if publishedAfter:
-            url += f"{amp}publishedAfter={publishedAfter}"
-            amp = "&"
-        if publishedBefore:
-            url += f"{amp}publishedBefore={publishedBefore}"
-            amp = "&"
-        if sortOrder:
-            url += f"{amp}sortOrder={sortOrder}"
-            amp = "&"
-        if sortParam:
-            url += f"{amp}sortParam={sortParam}"
-            amp = "&"
+        """Searches for products using OData API and returns resto-compatible GeoJSON."""
+        
+        coll_map = {
+            "Sentinel1": "SENTINEL-1",
+            "Sentinel2": "SENTINEL-2",
+            "Sentinel3": "SENTINEL-3",
+            "Sentinel5P": "SENTINEL-5P"
+        }
+        odata_coll = coll_map.get(collections, collections)
+        
+        filters = [f"Collection/Name eq '{odata_coll}'"]
+        
         if startDate:
-            url += f"{amp}startDate={startDate}"
-            amp = "&"
-        if updated:
-            url += f"{amp}updated={updated}"
-            amp = "&"
-        if lat and lon:
-            url += f"{amp}lat={lat}&lon={lon}"
-            amp = "&"
-        if lat and lon and radius:
-            url += f"&radius={radius}"
-            amp = "&"
-        if geometry:
-            url += f"{amp}geometry={geometry}"
-            amp = "&"
+            if len(startDate) == 10:
+                startDate += "T00:00:00.000Z"
+            # CDSE OData expects timestamps WITHOUT quotes in the filter
+            filters.append(f"ContentDate/Start gt {startDate}")
+
+        if productType:
+            filters.append(f"Attributes/OData.CSC.StringAttribute/any(att:att/Name eq 'productType' and att/Value eq '{productType}')")
+            
+        if sensorMode:
+            filters.append(f"Attributes/OData.CSC.StringAttribute/any(att:att/Name eq 'operationalMode' and att/Value eq '{sensorMode}')")
+
+        if cloudCover is not None:
+            filters.append(f"Attributes/OData.CSC.DoubleAttribute/any(att:att/Name eq 'cloudCover' and att/Value le {cloudCover})")
+
+        spatial_filter = None
         if box:
-            url += f"{amp}box={box}"
-            amp = "&"
-        if cloudCover:
-            url += f"{amp}cloudCover=[0,{cloudCover}]"
-            amp = "&"
+            try:
+                c = box.split(",")
+                # OData Intersects needs SRID=4326 prefix and unquoted geography literal
+                wkt = f"POLYGON(({c[0]} {c[1]},{c[2]} {c[1]},{c[2]} {c[3]},{c[0]} {c[3]},{c[0]} {c[1]}))"
+                spatial_filter = f"OData.CSC.Intersects(area=geography'SRID=4326;{wkt}')"
+            except:
+                pass
+        elif geometry:
+            spatial_filter = f"OData.CSC.Intersects(area=geography'SRID=4326;{geometry}')"
+            
+        if spatial_filter:
+            filters.append(spatial_filter)
+
+        filter_query = " and ".join(filters)
+        url = f"https://catalogue.dataspace.copernicus.eu/odata/v1/Products?$filter={quote(filter_query)}&$expand=Attributes"
+        
+        # Mapping sort orders
+        sort_map = {"descending": "desc", "ascending": "asc"}
+        odata_order = sort_map.get(sortOrder, sortOrder)
+        
+        # Mapping sort parameters
+        param_map = {"startDate": "ContentDate/Start", "completionDate": "ContentDate/End"}
+        odata_param = param_map.get(sortParam, sortParam)
+        
+        if odata_param:
+            url += f"&$orderby={odata_param} {odata_order}"
+        if maxRecords:
+            url += f"&$top={maxRecords}"
+
         r = req.get(url)
         if r.status_code != 200:
-            return r.status_code, r.text
-        else:
-            return r.status_code, r.json()
+            print(f"OData Search Error {r.status_code}: {r.text}")
+            return r.status_code, {"features": []}
+        
+        odata_data = r.json()
+        resto_compat = {"features": []}
+        
+        for item in odata_data.get("value", []):
+            cc = 0
+            for attr in item.get("Attributes", []):
+                if attr.get("Name") == "cloudCover":
+                    cc = attr.get("Value", 0)
+                    break
+            
+            # Clean footprint: geography'SRID=4326;POLYGON((...))' -> POLYGON((...))
+            raw_footprint = item.get("Footprint")
+            if raw_footprint:
+                clean_footprint = re.sub(r"geography'SRID=4326;(.+)'", r"\1", raw_footprint)
+            else:
+                clean_footprint = ""
+            
+            feat = {
+                "id": item["Id"],
+                "properties": {
+                    "title": item["Name"],
+                    "cloudCover": cc,
+                    "startDate": item["ContentDate"]["Start"],
+                    "footprint": clean_footprint
+                }
+            }
+            resto_compat["features"].append(feat)
+            
+        return r.status_code, resto_compat
 
     def getS2Utm(self, name):
         """Gets the UTM grid from a Sentinel 2 dataset name"""
         result = re.search(r"S2._......_\d+T\d+_\w\d+_\w\d+_(.*)_\d+T\d+.SAFE", name)
-        utm = result.groups()[0]
-        return utm
+        return result.groups()[0] if result else None
 
     def download(self, uuid, filename, directory="."):
         """Downloads a dataset from Copernicus"""
-        url = f"https://download.dataspace.copernicus.eu/download/{uuid}"
+        url = f"https://download.dataspace.copernicus.eu/odata/v1/Products({uuid})/$value"
         headers = {"Authorization": f"Bearer {self.token}"}
+        
+        print(f"Downloading {filename}...")
         r = req.get(url, headers=headers, stream=True)
+        r.raise_for_status()
+        
         with open(f"{directory}/{filename}.zip", "wb") as file:
-            for chunk in r.iter_content(chunk_size=10 * 1024):
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
                 file.write(chunk)
-            file.close()
-        del r
+        return True

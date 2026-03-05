@@ -17,22 +17,28 @@
 
 import os
 
+# ----- Base Directory ----------------------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # ----- Directories -------------------------------------------------
 DIRS = {
-    "DL": "temp",
-    "OUT": "output",
-    "S1": "output/s1",
-    "S2": "output/s2",
-    "S1_VV": "output/s1/vv",
-    "S1_VH": "output/s1/vh",
-    "S1_RATIOVVVH": "output/s1/ratiovvvh",
-    "S1_RATIOVHVV": "output/s1/ratiovhvv",
-    "S1_PRODUCTVVVH": "output/s1/productvvvh",
-    "S1_DIFFVVVH": "output/s1/diffvvvh",
-    "S2_TCI": "output/s2/tci",
-    "S2_NIRFC": "output/s2/nirfc",
-    "S2_AP": "output/s2/ap",
-    "S2_NDVI": "output/s2/ndvi",
+    "DL": os.path.join(BASE_DIR, "temp"),
+    "OUT": os.path.join(BASE_DIR, "output"),
+    "S1": os.path.join(BASE_DIR, "output/s1"),
+    "S2": os.path.join(BASE_DIR, "output/s2"),
+    "S1_VV": os.path.join(BASE_DIR, "output/s1/vv"),
+    "S1_VH": os.path.join(BASE_DIR, "output/s1/vh"),
+    "S1_RATIOVVVH": os.path.join(BASE_DIR, "output/s1/ratiovvvh"),
+    "S1_NDPI": os.path.join(BASE_DIR, "output/s1/ndpi"),
+    "S2_TCI": os.path.join(BASE_DIR, "output/s2/tci"),
+    "S2_NIRFC": os.path.join(BASE_DIR, "output/s2/nirfc"),
+    "S2_AP": os.path.join(BASE_DIR, "output/s2/ap"),
+    "S2_NDVI": os.path.join(BASE_DIR, "output/s2/ndvi"),
+    "S2_NDBI": os.path.join(BASE_DIR, "output/s2/ndbi"),
+    "S2_NDRE": os.path.join(BASE_DIR, "output/s2/ndre"),
+    "S2_NBR": os.path.join(BASE_DIR, "output/s2/nbr"),
+    "S2_CAMO": os.path.join(BASE_DIR, "output/s2/camo"),
+    "S1S2_FUSED": os.path.join(BASE_DIR, "output/fused"),
 }
 
 for dir in DIRS:
@@ -44,8 +50,24 @@ for dir in DIRS:
 S1_PCT_MIN = 2
 S1_PCT_MAX = 98
 
+# ----- Absolute dB scaling for consistent S1 contrast --------------
+S1_dB_MIN = -30.0
+S1_dB_MAX = 0.0
+
+# ----- Absolute scaling for derived S1 products --------------------
+S1_RATIO_MIN = 0.1
+S1_RATIO_MAX = 3.0
+S1_NDPI_MIN = 0.0
+S1_NDPI_MAX = 1.0
+
 S2_PCT_MIN = 2
 S2_PCT_MAX = 98
+
+# ----- Absolute Reflectance scaling for consistent S2 contrast -----
+# L2A reflectance is scaled by 10,000.
+# 0 to 10000 is the full range; we use Gamma to handle contrast.
+S2_REF_MIN = 0
+S2_REF_MAX = 10000
 
 # ----- Sentinel 2 subdatasets --------------------------------------
 DS_10m = 0  # 10m resolution bands

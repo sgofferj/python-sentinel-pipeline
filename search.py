@@ -32,13 +32,14 @@ PASSWORD = os.getenv("COPERNICUS_PASSWORD")
 mycop = cop.connect(USERNAME, PASSWORD)
 
 
-USE_LOG = func.strtobool(os.getenv("USE_LOG", default=True))
+USE_LOG = func.strtobool(os.getenv("USE_LOG", default="True"))
 
 S1_STARTDATE = os.getenv("S1_STARTDATE", default=func.yesterday())
 S1_MAXRECORDS = os.getenv("S1_MAXRECORDS", default=1)
 S1_SORTPARAM = os.getenv("S1_SORTPARAM", default="startDate")
 S1_SORTORDER = os.getenv("S1_SORTORDER", default="descending")
 S1_PRODUCTTYPE = os.getenv("S1_PRODUCTTYPE", default="GRD")
+S1_SENSORMODE = os.getenv("S1_SENSORMODE", default="IW")
 S1_CLIP = os.getenv("S1_CLIP", default=True)
 
 
@@ -96,23 +97,25 @@ def search_s1(boxes):
             sortParam=S1_SORTPARAM,
             sortOrder=S1_SORTORDER,
             productType=S1_PRODUCTTYPE,
+            sensorMode=S1_SENSORMODE,
         )
 
         filelist = []
         for feature in searchResult["features"]:
             fileID = feature["id"]
             fileName = feature["properties"]["title"]
+            # Keep the structure as returned by productSearch for consistency
             print(f"{fileName}")
             if lastlog != False:
-                if fileID in lastlog["files"]:
+                if fileID in [f["id"] for f in lastlog["files"]]:
                     print("File found in log - not using it.")
                 else:
-                    filelist.append({fileID: fileName})
-                    log.append(fileID)
+                    filelist.append(feature)
+                    log.append(feature)
                     files += 1
             else:
-                filelist.append({fileID: fileName})
-                log.append(fileID)
+                filelist.append(feature)
+                log.append(feature)
                 files += 1
         result.update({box: filelist})
         print(f'Found {len(searchResult["features"])} products since {startdate}.')
@@ -149,17 +152,18 @@ def search_s2(boxes):
         for feature in searchResult["features"]:
             fileID = feature["id"]
             fileName = feature["properties"]["title"]
-            print(f"{fileName}, {feature["properties"]["cloudCover"]}% cloud cover")
+
+            print(f"{fileName}, {feature['properties']['cloudCover']}% cloud cover")
             if lastlog != False:
-                if fileID in lastlog["files"]:
+                if fileID in [f["id"] for f in lastlog["files"]]:
                     print("File found in log - not using it.")
                 else:
-                    filelist.append({fileID: fileName})
-                    log.append(fileID)
+                    filelist.append(feature)
+                    log.append(feature)
                     files += 1
             else:
-                filelist.append({fileID: fileName})
-                log.append(fileID)
+                filelist.append(feature)
+                log.append(feature)
                 files += 1
         result.update({box: filelist})
         print(f'Found {len(searchResult["features"])} products since {startdate}.')

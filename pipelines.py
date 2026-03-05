@@ -23,6 +23,7 @@ import functions_s2 as s2
 import copernicus as cop
 from osgeo import gdal
 from search import search_s1, search_s2
+from correlate import run_correlation
 from dotenv import load_dotenv
 import zipfile
 import os
@@ -125,3 +126,6 @@ if __name__ == "__main__":
     if "S2" in PIPELINES:
         print("Sentinel 2")
         pipeline_S2()
+
+    print("\nChecking for S1/S2 overlaps for fusion...")
+    run_correlation()
