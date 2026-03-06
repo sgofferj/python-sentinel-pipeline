@@ -28,6 +28,22 @@ def get_radar_burn_legend():
     </div>
     """
 
+def get_target_probe_v2_legend():
+    """Returns HTML for the Advanced Target Probe legend."""
+    return """
+    <div class="legend-box" style="padding: 10px; background: rgba(0,0,0,0.8); color: white; border-radius: 5px; font-family: monospace; font-size: 12px;">
+        <div style="font-weight: bold; margin-bottom: 5px; color: #ffeb3b;">TARGET PROBE V2 (Sensor Fusion)</div>
+        <div style="height: 12px; width: 200px; background: linear-gradient(to right, #141428, #00c800, #00ffff, #ffff00, #ff0000); border: 1px solid #444;"></div>
+        <div style="display: flex; justify-content: space-between; width: 200px; margin-top: 2px;">
+            <span>Nature</span>
+            <span>Safe</span>
+            <span>Unusual</span>
+            <span>Built</span>
+        </div>
+        <div style="margin-top: 8px; color: #aaa; font-size: 10px;">Logic: (NDBI-NDRE) gated by S1-VH</div>
+    </div>
+    """
+
 def get_life_machine_legend():
     """Returns HTML for the Discovery Composite (Life/Machine) legend."""
     return """
@@ -72,7 +88,9 @@ def get_s2_index_legend(name, unit, vmin, vmax, colormap="RdYlGn"):
     if colormap == "grayscale":
         gradient = "linear-gradient(to right, #000, #fff)"
     if colormap == "urban":
-        gradient = "linear-gradient(to right, #28283c, #505050, #ffff00, #ff0000)"
+        gradient = "linear-gradient(to right, #141428, #3c3c3c, #ffff00, #ff0000)"
+    if colormap == "osint":
+        gradient = "linear-gradient(to right, #141428, #00c800, #00ffff, #ffff00, #ff0000)"
     
     return f"""
     <div class="legend-box" style="padding: 10px; background: rgba(0,0,0,0.8); color: white; border-radius: 5px; font-family: monospace; font-size: 12px;">
@@ -113,6 +131,7 @@ def save_all_legends(output_dir):
     legends = {
         # Fusion
         "RADAR-BURN": get_radar_burn_legend(),
+        "TARGET-PROBE-V2": get_target_probe_v2_legend(),
         "LIFE-MACHINE": get_life_machine_legend(),
         # S1
         "S1-VH": get_standard_sar_legend("VH"),
@@ -120,7 +139,8 @@ def save_all_legends(output_dir):
         # S2 Indices
         "S2-NDVI": get_s2_index_legend("NDVI", "Veg Index", -0.1, 0.9),
         "S2-NDRE": get_s2_index_legend("NDRE", "Red-Edge", -0.1, 0.5),
-        "S2-NDBI": get_s2_index_legend("NDBI", "Building Index", -0.6, 0.1, "urban"),
+        "S2-NDBI": get_s2_index_legend("NDBI", "Building Index", -0.6, 0.3, "urban"),
+        "S2-NDBI_CLEAN": get_s2_index_legend("NDBI_CLEAN", "OSINT Detect", -0.6, 0.2, "osint"),
         "S2-NBR": get_s2_index_legend("NBR", "Burn Ratio", -0.2, 0.5),
         # S2 Composites
         "S2-TCI": """<div class="legend-box" style="padding: 10px; background: rgba(0,0,0,0.8); color: white; border-radius: 5px; font-family: monospace; font-size: 12px;"><div style="font-weight: bold; color: #ffeb3b;">S2 TCI (Natural Color)</div></div>""",
@@ -133,4 +153,4 @@ def save_all_legends(output_dir):
     print(f"Legends saved to {output_dir}/legends.json")
 
 if __name__ == "__main__":
-    save_all_legends(os.path.join(c.DIRS['OUT'], "scripts"))
+    save_all_legends(c.DIRS['S1S2_LEGENDS'])
