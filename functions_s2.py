@@ -8,30 +8,50 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at https://www.gnu.org/licenses/gpl-3.0.en.html
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either expressed or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
+
+"""
+Sentinel-2 Optical processing module.
+Handles warping, multispectral index calculation, and single-pass rendering.
+"""
+
+import gc
+import os
+import re
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
+
+import numpy as np
+import rasterio as rio
+from rasterio.enums import ColorInterp
+from osgeo import gdal
 
 import constants as c
 import functions as func
 import legends
-from osgeo import gdal
-import rasterio as rio
-from rasterio.enums import ColorInterp
-import numpy as np
-import re
-import os
-import gc
-import multiprocessing
-from concurrent.futures import ProcessPoolExecutor
+import metadata_engine as meta
+import cog_finalizer as cog
 
 gdal.UseExceptions()
 
 
-# ----- Sentinel 2 helper functions ---------------------------------
+def build_overviews_gdal(path):
+    """Uses gdaladdo for memory-efficient overview building."""
+    func.perf_logger.start_step(f"S2 Overviews: {os.path.basename(path)}")
+    try:
+        subprocess.run(
+            [
+                "gdaladdo", "-r", "average",
+                "--config", "GDAL_NUM_THREADS", str(c.WORKERS),
+                path, "2", "4", "8", "16", "32"
+            ],
+            check=True,
+            capture_output=True
+        )
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        print(f"Warning: gdaladdo failed for {path}: {e}")
+    func.perf_logger.end_step()
+
+
 def get_utm(name):
     """Gets the UTM grid from a Sentinel 2 dataset name"""
     result = re.search(r"S2._......_\d+T\d+_\w\d+_\w\d+_(.*)_\d+T\d+.SAFE", name)
@@ -44,21 +64,21 @@ def get_time(name):
     return result.groups()[0] if result else None
 
 
-def prepare(ds):
+def prepare(ds_obj):
     """Reprojects required Sentinel-2 bands to EPSG:3857 at 10m resolution."""
+    func.perf_logger.start_step("S2 Warp (EPSG:3857)")
     print("Reprojecting required S2 bands to EPSG:3857 (10m aligned)...")
 
-    sub10m = ds.GetSubDatasets()[0][0]
-    sub20m = ds.GetSubDatasets()[1][0]
+    sub10m = ds_obj.GetSubDatasets()[0][0]
+    sub20m = ds_obj.GetSubDatasets()[1][0]
 
-    cores = max(1, multiprocessing.cpu_count() // 4)
     warp_options = {
         "dstSRS": "EPSG:3857",
         "xRes": 10,
         "yRes": 10,
         "multithread": True,
         "warpMemoryLimit": 256,
-        "warpOptions": [f"NUM_THREADS={cores}"],
+        "warpOptions": [f"NUM_THREADS={c.WORKERS}"],
         "creationOptions": [
             "TILED=YES",
             "BLOCKXSIZE=256",
@@ -69,54 +89,24 @@ def prepare(ds):
         "resampleAlg": gdal.GRA_Bilinear,
     }
 
-    print("  Bands 2,3,4,8 (Master Extent)")
     gdal.Warp("/tmp/s2_10m.tif", sub10m, **warp_options)
-
     master_info = gdal.Info("/tmp/s2_10m.tif", format="json")
     bounds = master_info["cornerCoordinates"]
     out_bounds = [
-        bounds["lowerLeft"][0],
-        bounds["lowerLeft"][1],
-        bounds["upperRight"][0],
-        bounds["upperRight"][1],
+        bounds["lowerLeft"][0], bounds["lowerLeft"][1],
+        bounds["upperRight"][0], bounds["upperRight"][1]
     ]
-
-    print("  Bands 5,11,12 (Aligned to 10m grid)")
     gdal.Warp("/tmp/s2_20m.tif", sub20m, outputBounds=out_bounds, **warp_options)
 
     gc.collect()
+    func.perf_logger.end_step()
 
 
 def cleanup():
+    """Removes intermediate temporary files."""
     for f in ["/tmp/s2_10m.tif", "/tmp/s2_20m.tif"]:
         if os.path.exists(f):
             os.remove(f)
-
-
-def _build_ov_task(path):
-    """Helper for parallel overview building."""
-    print(f"Building overviews for {os.path.basename(path)}...")
-    with rio.open(path, "r+") as ds:
-        ds.build_overviews([2, 4, 8, 16, 32], rio.enums.Resampling.average)
-    return path
-
-
-def _get_ndvi_colormap():
-    """Parses data/ndvi2.txt into a format usable by np.interp."""
-    vals = []
-    rs = []
-    gs = []
-    bs = []
-    colormap_path = os.path.join(c.BASE_DIR, "data/ndvi2.txt")
-    with open(colormap_path, "r", encoding="utf-8") as f:
-        for line in f:
-            parts = line.split()
-            if len(parts) == 4:
-                vals.append(float(parts[0]))
-                rs.append(int(parts[1]))
-                gs.append(int(parts[2]))
-                bs.append(int(parts[3]))
-    return np.array(vals), np.array(rs), np.array(gs), np.array(bs)
 
 
 def _apply_rdylgn(data, vmin=-0.2, vmax=0.5):
@@ -134,9 +124,7 @@ def _apply_rdylgn(data, vmin=-0.2, vmax=0.5):
 
 def _apply_urban_heat(data):
     """Applies a custom Urban Heat Map colormap to NDBI data (-1 to 1)."""
-    # Stat-based Nodes for Snow/Winter conditions:
-    # Most terrain is -0.7 to -0.3. Infrastructure is likely > -0.2.
-    nodes = [-0.6, -0.3, -0.15, 0.1]
+    nodes = [-0.6, -0.2, 0.05, 0.3]
     rs = [20, 60, 255, 255]
     gs = [20, 60, 255, 0]
     bs = [40, 60, 0, 0]
@@ -147,187 +135,176 @@ def _apply_urban_heat(data):
     return r, g, b
 
 
-def _render_internal(product_paths, skip_overviews=False):
-    """Single-pass renderer for all Sentinel-2 products including OSINT indices."""
-    print("Starting optimized single-pass S2 render...")
-    cores_render = 2
+def _apply_osint_ramp(data, vmin=-0.6, vmax=0.2):
+    """Safety Green -> Electric Cyan -> Magma Red"""
+    nodes = [vmin, -0.2, -0.05, 0.05, vmax]
+    rs = [20, 0, 0, 255, 255]
+    gs = [20, 200, 255, 255, 0]
+    bs = [60, 0, 255, 0, 0]
+    flat = data.flatten()
+    r = np.interp(flat, nodes, rs).astype(np.uint8).reshape(data.shape)
+    g = np.interp(flat, nodes, gs).astype(np.uint8).reshape(data.shape)
+    b = np.interp(flat, nodes, bs).astype(np.uint8).reshape(data.shape)
+    return r, g, b
+
+
+def _render_internal(visual_paths, analytic_paths, skip_overviews=False):
+    """Macro-block threaded renderer for S2 indices."""
+    func.perf_logger.start_step("S2 Single-Pass Render")
+    print(f"Starting Overdrive S2 Render (Block: {c.BLOCK_SIZE})...")
     ref_min, ref_max = c.S2_REF_MIN, c.S2_REF_MAX
-    cv, cr, cg, cb = _get_ndvi_colormap()
+    cv, cr, cg, cb = c.NDVI_PALETTE["values"], c.NDVI_PALETTE["r"], c.NDVI_PALETTE["g"], c.NDVI_PALETTE["b"]
 
     with rio.open("/tmp/s2_10m.tif") as src10, rio.open("/tmp/s2_20m.tif") as src20:
         total_blocks = len(list(src10.block_windows(1)))
-        profile = src10.profile.copy()
-        profile.update(
-            photometric="RGB",
-            count=4,
-            dtype=rio.uint8,
-            nodata=None,
-            compress="DEFLATE",
-            tiled=True,
-            blockxsize=256,
-            blockysize=256,
-            num_threads=2,
+
+        v_prof = src10.profile.copy()
+        v_prof.update(
+            photometric="RGB", count=4, dtype=rio.uint8, nodata=None,
+            compress="DEFLATE", tiled=True, blockxsize=256, blockysize=256, num_threads=2
         )
 
-        dst_handles = {}
-        try:
-            for p, path in product_paths.items():
-                if not func.outputExists(path):
-                    h = rio.open(path + ".tif", "w", **profile)
-                    h.colorinterp = [
-                        ColorInterp.red,
-                        ColorInterp.green,
-                        ColorInterp.blue,
-                        ColorInterp.alpha,
-                    ]
-                    dst_handles[p] = h
+        a_prof = src10.profile.copy()
+        a_prof.update(
+            count=1, dtype=rio.float32, nodata=0,
+            compress="DEFLATE", tiled=True, blockxsize=256, blockysize=256, num_threads=2
+        )
 
-            if not dst_handles:
-                print("All requested products already exist.")
-                return
+        v_handles = {
+            p: rio.open(path + ".tif", "w", **v_prof)
+            for p, path in visual_paths.items() if not func.outputExists(path)
+        }
+        a_handles = {
+            p: rio.open(path + ".tif", "w", **a_prof)
+            for p, path in analytic_paths.items() if not func.outputExists(path)
+        }
 
-            print(f"Rendering {list(dst_handles.keys())}...")
-            for i, (ji, window) in enumerate(src10.block_windows(1)):
-                if i % 500 == 0:
-                    print(f"  Progress: {i}/{total_blocks} blocks processed", end="\r")
+        def process_block(window):
+            b02 = src10.read(c.BAND_BLU, window=window)
+            b03 = src10.read(c.BAND_GRN, window=window)
+            b04 = src10.read(c.BAND_RED, window=window)
+            b08 = src10.read(c.BAND_NIR, window=window)
+            b05 = src20.read(c.BAND_RE1, window=window, out_shape=b02.shape)
+            b11 = src20.read(c.BAND_SW1, window=window, out_shape=b02.shape)
+            b12 = src20.read(c.BAND_SW2, window=window, out_shape=b02.shape)
+            alpha = np.where(b02 > 0, 255, 0).astype(np.uint8)
 
-                b02 = src10.read(1, window=window)
-                b03 = src10.read(2, window=window)
-                b04 = src10.read(3, window=window)
-                b08 = src10.read(4, window=window)
-                b05 = src20.read(1, window=window, out_shape=b02.shape)
-                b11 = src20.read(5, window=window, out_shape=b02.shape)
-                b12 = src20.read(6, window=window, out_shape=b02.shape)
-                alpha = np.where(b02 > 0, 255, 0).astype(np.uint8)
+            def scale(band, mn=ref_min, mx=ref_max, gamma=2.2):
+                res = (band.astype(np.float32) - mn) / (mx - mn)
+                res = np.clip(res, 0, 1)
+                if gamma != 1.0:
+                    res = np.power(res, 1 / gamma)
+                return (res * 255).astype(np.uint8)
 
-                def scale(band, mn=ref_min, mx=ref_max, gamma=2.2):
-                    res = (band.astype(np.float32) - mn) / (mx - mn)
-                    res = np.clip(res, 0, 1)
-                    if gamma != 1.0:
-                        res = np.power(res, 1 / gamma)
-                    return (res * 255).astype(np.uint8)
+            s_b02 = scale(b02)
+            s_b03 = scale(b03)
+            s_b04 = scale(b04)
+            s_b08 = scale(b08)
+            s_b11 = scale(b11, mn=ref_min, mx=4000, gamma=1.5)
+            s_b12 = scale(b12, mn=ref_min, mx=4000, gamma=1.5)
 
-                s_b02 = scale(b02)
-                s_b03 = scale(b03)
-                s_b04 = scale(b04)
-                s_b08 = scale(b08)
-                s_b11 = scale(b11, mn=ref_min, mx=4000, gamma=1.5)
-                s_b12 = scale(b12, mn=ref_min, mx=4000, gamma=1.5)
+            if "TCI" in v_handles:
+                v_handles["TCI"].write(np.stack([s_b04, s_b03, s_b02, alpha], axis=0), window=window)
+            if "NIRFC" in v_handles:
+                v_handles["NIRFC"].write(np.stack([s_b08, s_b04, s_b03, alpha], axis=0), window=window)
+            if "AP" in v_handles:
+                v_handles["AP"].write(np.stack([s_b12, s_b11, s_b08, alpha], axis=0), window=window)
 
-                if "TCI" in dst_handles:
-                    dst_handles["TCI"].write(
-                        np.stack([s_b04, s_b03, s_b02, alpha], axis=0), window=window
-                    )
-                if "NIRFC" in dst_handles:
-                    dst_handles["NIRFC"].write(
-                        np.stack([s_b08, s_b04, s_b03, alpha], axis=0), window=window
-                    )
-                if "AP" in dst_handles:
-                    dst_handles["AP"].write(
-                        np.stack([s_b12, s_b11, s_b08, alpha], axis=0), window=window
-                    )
+            # GPU Accelerated Indexing
+            ndvi_raw = func.gpu_calc_idx(b08, b04, alpha)
+            ndre_raw = func.gpu_calc_idx(b08, b05, alpha)
+            ndbi_raw = func.gpu_calc_idx(b11, b08, alpha)
+            nbr_raw = func.gpu_calc_idx(b08, b12, alpha)
 
+            if "NDVI" in a_handles:
+                a_handles["NDVI"].write(ndvi_raw, 1, window=window)
+            if "NDRE" in a_handles:
+                a_handles["NDRE"].write(ndre_raw, 1, window=window)
+            if "NDBI" in a_handles:
+                a_handles["NDBI"].write(ndbi_raw, 1, window=window)
+            if "NBR" in a_handles:
+                a_handles["NBR"].write(nbr_raw, 1, window=window)
+
+            if "NDVI" in v_handles:
+                flat_ndvi = ndvi_raw.flatten()
+                r_m = (np.interp(flat_ndvi, cv, cr).astype(np.uint8).reshape(b08.shape))
+                g_m = (np.interp(flat_ndvi, cv, cg).astype(np.uint8).reshape(b08.shape))
+                b_m = (np.interp(flat_ndvi, cv, cb).astype(np.uint8).reshape(b08.shape))
+                v_handles["NDVI"].write(np.stack([r_m, g_m, b_m, alpha], axis=0), window=window)
+
+            if "NDRE" in v_handles:
+                r, g, b = _apply_rdylgn(ndre_raw)
+                v_handles["NDRE"].write(np.stack([r, g, b, alpha], axis=0), window=window)
+
+            if "NDBI" in v_handles:
+                r, g, b = _apply_urban_heat(ndbi_raw)
+                v_handles["NDBI"].write(np.stack([r, g, b, alpha], axis=0), window=window)
+
+            if "NDBI_CLEAN" in v_handles:
+                ndbi_clean = ndbi_raw - (ndre_raw * 0.4)
+                r, g, b = _apply_osint_ramp(ndbi_clean)
+                v_handles["NDBI_CLEAN"].write(np.stack([r, g, b, alpha], axis=0), window=window)
+
+            if "NBR" in v_handles:
+                r, g, b = _apply_rdylgn(nbr_raw, vmin=-0.2, vmax=0.5)
+                v_handles["NBR"].write(np.stack([r, g, b, alpha], axis=0), window=window)
+
+            if "CAMO" in v_handles:
                 def scale_nd(val):
                     return np.clip((val + 1) / 2 * 255, 0, 255).astype(np.uint8)
+                v_handles["CAMO"].write(
+                    np.stack([scale_nd(ndvi_raw), scale_nd(ndre_raw), s_b03, alpha], axis=0),
+                    window=window
+                )
 
-                # Pre-calculate NDVI and NDRE for sharing
-                def calc_idx(ba, bb):
-                    denom = ba.astype(float) + bb.astype(float)
-                    idx = np.full_like(ba, -1.0, dtype=np.float32)
-                    m = (denom != 0) & (alpha > 0)
-                    idx[m] = (ba[m].astype(float) - bb[m].astype(float)) / denom[m]
-                    return idx
+        # Macro-block Logic
+        windows = []
+        for r in range(0, src10.height, c.BLOCK_SIZE):
+            for col in range(0, src10.width, c.BLOCK_SIZE):
+                windows.append(rio.windows.Window(
+                    col, r,
+                    min(c.BLOCK_SIZE, src10.width - col),
+                    min(c.BLOCK_SIZE, src10.height - r)
+                ))
 
-                ndvi_raw = calc_idx(b08, b04)
-                ndre_raw = calc_idx(b08, b05)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            executor.map(process_block, windows)
 
-                if "NDVI" in dst_handles:
-                    flat_ndvi = ndvi_raw.flatten()
-                    r_m = (
-                        np.interp(flat_ndvi, cv, cr).astype(np.uint8).reshape(b08.shape)
-                    )
-                    g_m = (
-                        np.interp(flat_ndvi, cv, cg).astype(np.uint8).reshape(b08.shape)
-                    )
-                    b_m = (
-                        np.interp(flat_ndvi, cv, cb).astype(np.uint8).reshape(b08.shape)
-                    )
-                    dst_handles["NDVI"].write(
-                        np.stack([r_m, g_m, b_m, alpha], axis=0), window=window
-                    )
+        # Only build overviews and finalizers for VISUAL paths
+        vis_output_paths = []
+        for h in v_handles.values():
+            vis_output_paths.append(h.name)
+            h.close()
+        
+        # Just close analytics
+        for h in a_handles.values():
+            h.close()
 
-                if "NDRE" in dst_handles:
-                    r, g, b = _apply_rdylgn(ndre_raw)
-                    dst_handles["NDRE"].write(
-                        np.stack([r, g, b, alpha], axis=0), window=window
-                    )
-
-                if "NDBI" in dst_handles:
-                    idx = calc_idx(b11, b08)
-                    r, g, b = _apply_urban_heat(idx)
-                    dst_handles["NDBI"].write(
-                        np.stack([r, g, b, alpha], axis=0), window=window
-                    )
-
-                if "NBR" in dst_handles:
-                    idx = calc_idx(b08, b12)
-                    r, g, b = _apply_rdylgn(idx, vmin=-0.2, vmax=0.5)
-                    dst_handles["NBR"].write(
-                        np.stack([r, g, b, alpha], axis=0), window=window
-                    )
-
-                if "CAMO" in dst_handles:
-                    # CAMO Composite: R=NDVI, G=NDRE, B=TCI-Green
-                    # All are scaled 0-255
-                    s_ndvi = scale_nd(ndvi_raw)
-                    s_ndre = scale_nd(ndre_raw)
-                    dst_handles["CAMO"].write(
-                        np.stack([s_ndvi, s_ndre, s_b03, alpha], axis=0), window=window
-                    )
-
-            print(f"\nRender complete.")
-
-        finally:
-            output_paths = []
-            for h in dst_handles.values():
-                output_paths.append(h.name)
-                h.close()
-            if output_paths and not skip_overviews:
-                print(f"Building overviews in parallel (throttled to 2 workers)...")
-                with ProcessPoolExecutor(max_workers=2) as executor:
-                    list(executor.map(_build_ov_task, output_paths))
-            
-            # Update HTML legends for frontend consumption
-            legends.save_all_legends(os.path.join(c.DIRS['OUT'], "scripts"))
-            
-            gc.collect()
+        func.perf_logger.end_step()
+        if vis_output_paths and not skip_overviews:
+            for path in vis_output_paths:
+                build_overviews_gdal(path)
+                p_type = path.split('/')[-2].upper()
+                meta.generate_sidecar(path, f"S2-{p_type}", f"S2-{p_type}")
+                cog.convert_to_cog(path)
+        legends.save_all_legends(c.DIRS['S1S2_LEGENDS'])
+        gc.collect()
 
 
-def runPipeline(ds, processes):
-    """Runs the Sentinel 2 pipeline"""
-    productURI = gdal.Info(ds, format="json")["metadata"][""]["PRODUCT_URI"]
-    utm = get_utm(productURI)
-    time_str = get_time(productURI) + "Z"
+def run_pipeline(ds_obj, processes):
+    """Entry point for S2 pipeline."""
+    product_uri = gdal.Info(ds_obj, format="json")["metadata"][""]["PRODUCT_URI"]
+    utm = get_utm(product_uri)
+    time_str = get_time(product_uri) + "Z"
     name = f"{utm}-{time_str}"
 
-    product_paths = {}
-    for p in ["TCI", "NIRFC", "AP", "NDVI", "NDBI", "NDRE", "NBR", "CAMO"]:
+    v_paths = {}
+    a_paths = {}
+    for p in ["TCI", "NIRFC", "AP", "NDVI", "NDBI", "NDRE", "NBR", "CAMO", "NDBI_CLEAN"]:
         if p in processes:
-            product_paths[p] = f"{c.DIRS[f'S2_{p}']}/{name}-{p}"
-
-    all_exist = all(func.outputExists(p) for p in product_paths.values())
-    if all_exist:
-        print(f"  All S2 products for {name} already exist. Skipping heavy processing.")
-        return
-
-    prepare(ds)
-    _render_internal(product_paths)
+            v_paths[p] = f"{c.DIRS[f'VIS_S2_{p}']}/{name}-{p}"
+            if f"ANA_S2_{p}" in c.DIRS:
+                a_paths[p] = f"{c.DIRS[f'ANA_S2_{p}']}/{name}-{p}"
+    prepare(ds_obj)
+    _render_internal(v_paths, a_paths)
     cleanup()
-
-
-def render(base_name, processes, skip_overviews=False):
-    """Helper for test script."""
-    product_paths = {}
-    for p in processes:
-        product_paths[p] = f"{base_name}-{p}"
-    _render_internal(product_paths, skip_overviews=skip_overviews)

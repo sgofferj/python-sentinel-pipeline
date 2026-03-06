@@ -5,13 +5,10 @@
 Licensed under the GNU General Public License V3 or later.
 
 > [!CAUTION]
-> This project is under heavy development and currently not ready to be used without Python knowledge.
-> I will make this a docker container at a later point but for the moment the project should be
-> considered more like a tech preview than a ready product.
+> This project is under heavy development. While functional, it is currently in a "tech preview" phase.
 
 > [!WARNING]
-> Sentinel 2 datafiles are BIG. For Sentinel 2 processing you will need at least 16GB of RAM. Also make sure,
-> you have ample disk space!
+> Sentinel 2 datafiles are BIG. You will need at least 16GB of RAM. High-performance SSD storage is strongly recommended for temporary processing.
 
 ## Description
 
@@ -19,52 +16,52 @@ This project is a fully automatic, high-precision pipeline to download and proce
 
 ## Features
 
-### Radiometric Consistency
-- **Absolute Physical Scaling:** Uses fixed physical units (dB for Sentinel-1, Reflectance for Sentinel-2) instead of dynamic stretching. This ensures that pixel values are consistent across different dates, a critical requirement for automated change detection.
+### Dual-Output Architecture
+The pipeline now produces two distinct classes of output:
+- **Visual (RGBA):** 8-bit Cloud Optimized GeoTIFFs (COGs) with high-contrast non-linear stretching, optimized for instant web display (Leaflet/Cesium). Includes automated HTML/CSS legends and `.json` metadata sidecars.
+- **Analytic (Float32):** Single-band high-fidelity rasters preserving absolute physical units (dB/Reflectance). These are the source of truth for automated change detection and statistical analysis.
 
-### Sentinel 1 Pipeline (SAR)
-- **Automatic Search & Download:** Supports GRD IW products.
-- **Calibration & Denoising:** Custom `S1Calibrator` for radiometric calibration (Sigma0) and thermal noise removal.
-- **Footprint Masking:** High-precision alpha masks derived from `manifest.safe`.
-- **Products:**
-  - **VV / VH:** Absolute dB scaled greyscale images (-30 to 0 dB).
-  - **RATIOVVVH:** Pseudocolor composite (Red=VV, Green=VH, Blue=Ratio).
-  - **NDPI:** Normalized Difference Polarization Index.
+### Performance & Scaling
+- **Single-Pass Rendering:** S1 and S2 products are rendered in a single windowed loop to minimize Disk I/O.
+- **Multi-threaded Calibration:** S1 radiometric calibration uses a high-concurrency `ThreadPoolExecutor`.
+- **COG Integration:** Automatic conversion to COG format using `gdaladdo` and `gdal_translate` with multi-threaded DEFLATE compression.
+- **Performance Tracking:** Integrated `PerformanceLogger` tracks execution time, peak RSS memory, and recursive child-process CPU usage.
 
-### Sentinel 2 Pipeline (Optical)
-- **Level-2A Optimized:** Focuses on Bottom-of-Atmosphere (BOA) reflectance.
-- **Winter/Snow Optimization:** Fixed physical clipping (0-0.3 reflectance) with Gamma 2.2 correction to preserve forest detail in high-latitude winter conditions.
-- **OSINT Products (10m):**
-  - **TCI / NIRFC / SWIR AP:** Standard and False Color composites.
-  - **NDVI:** Normalized Difference Vegetation Index.
-  - **NDRE (Red Edge):** High-sensitivity vegetation stress detection; peers through canopy to find "biological disturbances" (trails, hidden bases, camouflage).
-  - **NDBI (Built-Up):** Highlights concrete, asphalt, and new infrastructure.
-  - **NBR (Burn Ratio):** Identifies scorched earth or kinetic impacts.
-  - **CAMO Composite:** Specialized Red(NDVI), Green(NDRE), Blue(TCI-Green) layer to reveal cut-foliage camouflage.
-
-### Multi-Sensor Fusion
-- **Spatial Matchmaker:** Automated logic to identify temporal (+/- 24h) and spatial overlaps between processed S1 and S2 products.
-- **Surgical Fusion (Radar-over-Optical):** "Zero-Warp" high-precision burn-in of high-intensity S1 VH backscatter (>-10dB) into S2 TCI base. The output is surgically clipped to the exact overlap extent.
-- **Life-vs-Machine:** Fuses S1-VH (Structure), S2-NDVI (Health), and S2-NDRE (Stress) into a single RGB product to distinguish human activity from natural forest.
+### OSINT Specializations
+- **Target Probe V2:** Advanced sensor fusion using NDBI_CLEAN (Vegetation-decoupled building index) gated by S1-VH metallic signatures.
+- **Life-vs-Machine:** Combined SAR/Optical discovery composite.
+- **Urban Heat Map:** High-contrast pseudo-coloring for infrastructure detection in snow/winter conditions.
 
 ## Configuration
 
 The following values are supported in the `.env` file.
 
-### General
-| Variable  | Purpose |
-| --------- | ------- |
-| USE_LOG   | Enable search log to prevent re-downloading same products. |
-| PIPELINES | Which pipelines to run ("S1,S2"). |
+| Variable | Purpose | Default |
+| :--- | :--- | :--- |
+| `PIPELINES` | Which pipelines to run ("S1,S2"). | "S1,S2" |
+| `PIPELINE_WORKERS` | Number of concurrent threads/workers for math and I/O. | 2 |
+| `COPERNICUS_USERNAME` | CDSE Account Email. | - |
+| `COPERNICUS_PASSWORD` | CDSE Account Password. | - |
 
-### Sentinel 1 / 2
-Standard CDSE search parameters are supported: `_BOX`, `_STARTDATE`, `_MAXRECORDS`, `_PRODUCTTYPE`, `_SORTPARAM`, etc.
+## Deployment (Docker)
 
-## Usage
+The project is designed to run as a scheduled container.
+
+### Volume Strategy
+- `/app/temp`: **Bind mount** to high-speed scratch space (SSD). Handles multi-GB raw downloads and intermediate warps.
+- `/app/output`: **Bind mount** for persistent storage of visual and analytic products.
+
+### Hardware Acceleration (GPU)
+For future CUDA/OpenCL acceleration, the container requires the following runtime privileges:
+- **NVIDIA:** Use `--gpus all` and ensure the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) is installed on the host.
+- **OpenCL:** Mount the host DRI devices (e.g., `--device /dev/dri:/dev/dri`).
+
+### Scheduling
+The internal Cron daemon (default `04:00 UTC`) can be overridden via the `CRON_SCHEDULE` environment variable.
+
+## Usage (Manual)
 
 1. Create a virtual environment: `python -m venv venv`
 2. Install dependencies: `pip install -r requirements.txt`
 3. Configure `.env` with your CDSE credentials.
 4. Run the pipeline: `python pipelines.py`
-
-Fused products and OSINT indices will be generated automatically in the `output/` directory if overlaps are found.
