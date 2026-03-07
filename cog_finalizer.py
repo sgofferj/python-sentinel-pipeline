@@ -9,12 +9,19 @@
 # You may obtain a copy of the License at https://www.gnu.org/licenses/gpl-3.0.en.html
 #
 
+"""
+Finalizer module for converting tiled GeoTIFFs to Cloud Optimized GeoTIFF (COG).
+"""
+
 import os
 import subprocess
-import functions as func
-import constants as c
+from typing import List
 
-def convert_to_cog(path):
+import constants as c
+import functions as func
+
+
+def convert_to_cog(path: str) -> None:
     """
     Converts a TIF to a Cloud Optimized GeoTIFF (COG).
     Uses smart copy to preserve existing overviews.
@@ -23,31 +30,41 @@ def convert_to_cog(path):
         return
 
     func.perf_logger.start_step(f"COG Conversion: {os.path.basename(path)}")
-    tmp_path = path + ".tmp.tif"
-    
+    tmp_path: str = path + ".tmp.tif"
+
     # Use configurable WORKERS for multi-threaded compression
-    cmd = [
+    cmd: List[str] = [
         "gdal_translate",
-        "-of", "COG",
-        "-co", "COPY_SRC_OVERVIEWS=YES",
-        "-co", "COMPRESS=DEFLATE",
-        "-co", "LEVEL=6", 
-        "--config", "GDAL_NUM_THREADS", str(c.WORKERS),
+        "-of",
+        "COG",
+        "-co",
+        "COPY_SRC_OVERVIEWS=YES",
+        "-co",
+        "COMPRESS=DEFLATE",
+        "-co",
+        "LEVEL=6",
+        "--config",
+        "GDAL_NUM_THREADS",
+        str(c.WORKERS),
         path,
-        tmp_path
+        tmp_path,
     ]
-    
+
     try:
         subprocess.run(cmd, check=True, capture_output=True)
         # Replace original with COG
         os.replace(tmp_path, path)
-        print(f"Converted to COG: {os.path.basename(path)}")
+        print(f"Converted to COG: {os.path.basename(path)}", flush=True)
     except subprocess.CalledProcessError as e:
-        print(f"Error converting {path} to COG: {e.stderr.decode()}")
+        print(
+            f"Error converting {path} to COG: {e.stderr.decode()}",
+            flush=True,
+        )
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
-    
+
     func.perf_logger.end_step()
+
 
 if __name__ == "__main__":
     pass
