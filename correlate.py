@@ -18,10 +18,11 @@ import os
 import json
 import subprocess
 from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import rasterio as rio
-from rasterio.windows import from_bounds
+from rasterio.windows import from_bounds, Window
 from rasterio.warp import transform_geom
 from rasterio.features import rasterize
 from shapely.wkt import loads
@@ -36,15 +37,15 @@ import cog_finalizer as cog
 # --- CUDA Autodetection ---
 try:
     import cupy as cp
-    HAS_CUDA = os.getenv("DISABLE_GPU", "false").lower() not in ("true", "1")
+    HAS_CUDA: bool = os.getenv("DISABLE_GPU", "false").lower() not in ("true", "1")
 except ImportError:
     HAS_CUDA = False
 
 
-def build_overviews_gdal(path):
+def build_overviews_gdal(path: str) -> None:
     """Uses gdaladdo for memory-efficient overview building."""
     func.perf_logger.start_step(f"Fusion Overviews: {os.path.basename(path)}")
-    print(f"Building overviews for {os.path.basename(path)} (External Process)...")
+    print(f"Building overviews for {os.path.basename(path)} (External Process)...", flush=True)
     try:
         subprocess.run(
             [
@@ -56,11 +57,11 @@ def build_overviews_gdal(path):
             capture_output=True
         )
     except Exception as e:  # pylint: disable=broad-exception-caught
-        print(f"Warning: gdaladdo failed for {path}: {e}")
+        print(f"Warning: gdaladdo failed for {path}: {e}", flush=True)
     func.perf_logger.end_step()
 
 
-def turbo_colormap(x):
+def turbo_colormap(x: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Linear interpolation for a Turbo-like ramp."""
     r = np.clip(np.where(x < 0.5, 0, np.where(x < 0.75, (x - 0.5) / 0.25, 1.0)), 0, 1)
     g = np.clip(np.where(x < 0.25, x / 0.25, np.where(x < 0.75, 1.0, 1.0 - (x - 0.75) / 0.25)), 0, 1)
@@ -68,7 +69,7 @@ def turbo_colormap(x):
     return (r * 255).astype(np.uint8), (g * 255).astype(np.uint8), (b * 255).astype(np.uint8)
 
 
-def osint_ramp_colormap(x):
+def osint_ramp_colormap(x: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Safety Green (0) -> Electric Cyan (0.5) -> Magma Red (1.0)"""
     if HAS_CUDA:
         x_g = cp.array(x)
@@ -89,7 +90,7 @@ def osint_ramp_colormap(x):
     return r.astype(np.uint8), g.astype(np.uint8), b.astype(np.uint8)
 
 
-def load_log(sat):
+def load_log(sat: str) -> Optional[Dict[str, Any]]:
     """Loads the last search log for a satellite."""
     logfile = os.path.join(c.DIRS['DL'], f"{sat}_last.json")
     if os.path.exists(logfile):
@@ -98,10 +99,10 @@ def load_log(sat):
     return None
 
 
-def find_overlaps(max_hours=24):
+def find_overlaps(max_hours: int = 24) -> List[Dict[str, Any]]:
     """Identifies temporal and spatial overlaps between S1 and S2."""
-    s1_log = load_log('s1')
-    s2_log = load_log('s2')
+    s1_log: Optional[Dict[str, Any]] = load_log('s1')
+    s2_log: Optional[Dict[str, Any]] = load_log('s2')
     if not s1_log or not s2_log:
         return []
 
@@ -127,7 +128,7 @@ def find_overlaps(max_hours=24):
     return matches
 
 
-def get_processed_paths(s1_feat, s2_feat):
+def get_processed_paths(s1_feat: Dict[str, Any], s2_feat: Dict[str, Any]) -> Tuple[str, str, str, str, str, str]:
     """Resolves file paths for processed analytic and visual products."""
     s1_title = s1_feat['properties']['title']
     s1_name = f"S1_{os.path.basename(s1_title).split('_')[4]}_{os.path.basename(s1_title).split('_')[5]}"
@@ -149,27 +150,31 @@ def get_processed_paths(s1_feat, s2_feat):
     return vh_ana_path, tci_vis_path, s2_name, ndbi_ana_path, ndre_ana_path, nirfc_vis_path
 
 
-def calculate_tight_window(inter_geom_4326, s2_crs):
-    """Calculates clipped bounds with an internal buffer."""
-    geom_3857 = transform_geom('EPSG:4326', s2_crs, mapping(inter_geom_4326))
+def calculate_tight_window(inter_geom_4326: Any, s2_src: rio.DatasetReader) -> Tuple[int, int, rio.Affine, Window, Any]:
+    """Calculates clipped bounds with an internal buffer using precise pixel coordinates."""
+    geom_3857 = transform_geom('EPSG:4326', s2_src.crs, mapping(inter_geom_4326))
     inter_shape = shape(geom_3857).buffer(-500)
-    l, b, r, t = inter_shape.bounds
-    res = 10.0
-    w = int((r - l) / res)
-    h = int((t - b) / res)
-    transform = rio.transform.from_origin(l, t, res, res)
-    return w, h, transform, inter_shape
+    
+    # Get Window directly from source to avoid rounding artifacts
+    win = s2_src.window(*inter_shape.bounds).round_offsets().round_lengths()
+    
+    # Extract properties from the finalized window
+    out_w = int(win.width)
+    out_h = int(win.height)
+    out_transform = s2_src.window_transform(win)
+    
+    return out_w, out_h, out_transform, win, inter_shape
 
 
-def fuse_radar_optical(vh_path, tci_path, out_name, inter_geom, threshold=-15):
+def fuse_radar_optical(vh_path: str, tci_path: str, out_name: str, inter_geom: Any, threshold: float = -15.0) -> None:
     """Fuses S1-VH detections over S2-TCI background."""
     if not os.path.exists(vh_path) or not os.path.exists(tci_path):
         return
-    func.perf_logger.start_step(f"Fusion: {out_name} RADAR-BURN")
+    func.perf_logger.start_step(f"Fusion: {out_name} RADAR-BURN", use_gpu=True)
 
     with rio.open(tci_path) as s2_src, rio.open(vh_path) as s1_src:
-        out_w, out_h, out_transform, inter_poly = calculate_tight_window(inter_geom, s2_src.crs)
-        print(f"Fusing Target Probe (Ghost Blend: {out_w}x{out_h})...")
+        out_w, out_h, out_transform, s2_win, inter_poly = calculate_tight_window(inter_geom, s2_src)
+        print(f"Fusing Target Probe (Ghost Blend: {out_w}x{out_h})...", flush=True)
 
         geom_mask = rasterize(
             [inter_poly],
@@ -184,18 +189,18 @@ def fuse_radar_optical(vh_path, tci_path, out_name, inter_geom, threshold=-15):
 
         out_path = os.path.join(c.DIRS['VIS_FUSED'], f"{out_name}-RADAR-BURN.tif")
         with rio.open(out_path, 'w', **profile) as dst:
+            # Map S2 window to S1 space
+            win_bounds = s2_src.window_bounds(s2_win)
+            s1_win = s1_src.window(*win_bounds)
+
             for _, window in dst.block_windows(1):
-                win_bounds = rio.windows.bounds(window, out_transform)
-                s2_win_data = s2_src.read(
-                    [1, 2, 3, 4],
-                    window=from_bounds(*win_bounds, s2_src.transform),
-                    out_shape=(4, window.height, window.width)
-                )
-                s1_vh_data = s1_src.read(
-                    1,
-                    window=from_bounds(*win_bounds, s1_src.transform),
-                    out_shape=(window.height, window.width)
-                )
+                # Calculate sub-windows for reading
+                dst_bounds = dst.window_bounds(window)
+                s2_sub_win = s2_src.window(*dst_bounds)
+                s1_sub_win = s1_src.window(*dst_bounds)
+
+                s2_win_data = s2_src.read([1, 2, 3, 4], window=s2_sub_win, out_shape=(4, window.height, window.width))
+                s1_vh_data = s1_src.read(1, window=s1_sub_win, out_shape=(window.height, window.width))
 
                 if HAS_CUDA:
                     vh_g = cp.array(s1_vh_data, dtype=cp.float32)
@@ -230,17 +235,16 @@ def fuse_radar_optical(vh_path, tci_path, out_name, inter_geom, threshold=-15):
         cog.convert_to_cog(out_path)
 
 
-def fuse_target_probe_v2(vh_path, ndbi_path, ndre_path, tci_path, out_name, inter_geom):
+def fuse_target_probe_v2(vh_path: str, ndbi_path: str, ndre_path: str, tci_path: str, out_name: str, inter_geom: Any) -> None:
     """Advanced Target Probe using NDBI-NDRE gated by S1-VH."""
-    # pylint: disable=too-many-locals
     if not all(os.path.exists(p) for p in [vh_path, ndbi_path, ndre_path, tci_path]):
         return
-    func.perf_logger.start_step(f"Fusion: {out_name} TARGET-PROBE-V2")
+    func.perf_logger.start_step(f"Fusion: {out_name} TARGET-PROBE-V2", use_gpu=True)
 
     with rio.open(tci_path) as tci_src, rio.open(vh_path) as vh_src, \
          rio.open(ndbi_path) as ndbi_src, rio.open(ndre_path) as ndre_src:
-        out_w, out_h, out_transform, inter_poly = calculate_tight_window(inter_geom, tci_src.crs)
-        print(f"Creating Advanced Target Probe (Ghost Blend: {out_w}x{out_h})...")
+        out_w, out_h, out_transform, s2_win, inter_poly = calculate_tight_window(inter_geom, tci_src)
+        print(f"Creating Advanced Target Probe (Ghost Blend: {out_w}x{out_h})...", flush=True)
 
         geom_mask = rasterize(
             [inter_poly],
@@ -256,11 +260,11 @@ def fuse_target_probe_v2(vh_path, ndbi_path, ndre_path, tci_path, out_name, inte
         out_path = os.path.join(c.DIRS['VIS_FUSED'], f"{out_name}-TARGET-PROBE-V2.tif")
         with rio.open(out_path, 'w', **profile) as dst:
             for _, window in dst.block_windows(1):
-                win_bounds = rio.windows.bounds(window, out_transform)
-                tci_data = tci_src.read([1, 2, 3, 4], window=from_bounds(*win_bounds, tci_src.transform), out_shape=(4, window.height, window.width))
-                vh_data = vh_src.read(1, window=from_bounds(*win_bounds, vh_src.transform), out_shape=(window.height, window.width))
-                ndbi_data = ndbi_src.read(1, window=from_bounds(*win_bounds, ndbi_src.transform), out_shape=(window.height, window.width))
-                ndre_data = ndre_src.read(1, window=from_bounds(*win_bounds, ndre_src.transform), out_shape=(window.height, window.width))
+                dst_bounds = dst.window_bounds(window)
+                tci_data = tci_src.read([1, 2, 3, 4], window=tci_src.window(*dst_bounds), out_shape=(4, window.height, window.width))
+                vh_data = vh_src.read(1, window=vh_src.window(*dst_bounds), out_shape=(window.height, window.width))
+                ndbi_data = ndbi_src.read(1, window=ndbi_src.window(*dst_bounds), out_shape=(window.height, window.width))
+                ndre_data = ndre_src.read(1, window=ndre_src.window(*dst_bounds), out_shape=(window.height, window.width))
 
                 if HAS_CUDA:
                     v_g = cp.array(vh_data); nbi_g = cp.array(ndbi_data); nre_g = cp.array(ndre_data)
@@ -303,16 +307,15 @@ def fuse_target_probe_v2(vh_path, ndbi_path, ndre_path, tci_path, out_name, inte
         cog.convert_to_cog(out_path)
 
 
-def fuse_life_machine(vh_path, tci_path, nirfc_path, out_name, inter_geom):
+def fuse_life_machine(vh_path: str, tci_path: str, nirfc_path: str, out_name: str, inter_geom: Any) -> None:
     """Life vs Machine discovery composite."""
-    # pylint: disable=too-many-locals
     if not all(os.path.exists(p) for p in [vh_path, tci_path, nirfc_path]):
         return
-    func.perf_logger.start_step(f"Fusion: {out_name} LIFE-MACHINE")
+    func.perf_logger.start_step(f"Fusion: {out_name} LIFE-MACHINE", use_gpu=True)
 
     with rio.open(tci_path) as tci_src, rio.open(vh_path) as vh_src, rio.open(nirfc_path) as nirfc_src:
-        out_w, out_h, out_transform, inter_poly = calculate_tight_window(inter_geom, tci_src.crs)
-        print(f"Creating Discovery Composite (Functional Mapping: {out_w}x{out_h})...")
+        out_w, out_h, out_transform, s2_win, inter_poly = calculate_tight_window(inter_geom, tci_src)
+        print(f"Creating Discovery Composite (Functional Mapping: {out_w}x{out_h})...", flush=True)
 
         geom_mask = rasterize(
             [inter_poly],
@@ -328,21 +331,21 @@ def fuse_life_machine(vh_path, tci_path, nirfc_path, out_name, inter_geom):
         out_path = os.path.join(c.DIRS['VIS_FUSED'], f"{out_name}-LIFE-MACHINE.tif")
         with rio.open(out_path, 'w', **profile) as dst:
             for _, window in dst.block_windows(1):
-                win_bounds = rio.windows.bounds(window, out_transform)
-                nir = nirfc_src.read(1, window=from_bounds(*win_bounds, nirfc_src.transform), out_shape=(window.height, window.width)).astype(float)
-                red_band = tci_src.read(1, window=from_bounds(*win_bounds, tci_src.transform), out_shape=(window.height, window.width)).astype(float)
-                blue_band = tci_src.read(3, window=from_bounds(*win_bounds, tci_src.transform), out_shape=(window.height, window.width)).astype(float)
-                vh_data = vh_src.read(1, window=from_bounds(*win_bounds, vh_src.transform), out_shape=(window.height, window.width)).astype(float)
+                dst_bounds = dst.window_bounds(window)
+                nir = nirfc_src.read(1, window=nirfc_src.window(*dst_bounds), out_shape=(window.height, window.width)).astype(float)
+                red_band = tci_src.read(1, window=tci_src.window(*dst_bounds), out_shape=(window.height, window.width)).astype(float)
+                blue_band = tci_src.read(3, window=tci_src.window(*dst_bounds), out_shape=(window.height, window.width)).astype(float)
+                vh_data = vh_src.read(1, window=vh_src.window(*dst_bounds), out_shape=(window.height, window.width)).astype(float)
 
                 if HAS_CUDA:
                     vh_g = cp.array(vh_data)
                     vh_db_g = 10 * cp.log10(cp.maximum(vh_g, 1e-9))
-                    vh_vis_g = cp.clip((vh_db_g - c.S1_dB_MIN) / (c.S1_dB_MAX - c.S1_dB_MIN) * 255, 0, 255)
+                    vh_vis_g = cp.clip((vh_db_g - c.S1_DB_MIN) / (c.S1_DB_MAX - c.S1_DB_MIN) * 255, 0, 255)
                     vh_vis = cp.asnumpy(vh_vis_g)
                     del vh_g, vh_db_g, vh_vis_g
                 else:
                     vh_db = 10 * np.log10(np.maximum(vh_data, 1e-9))
-                    vh_vis = np.clip((vh_db - c.S1_dB_MIN) / (c.S1_dB_MAX - c.S1_dB_MIN) * 255, 0, 255)
+                    vh_vis = np.clip((vh_db - c.S1_DB_MIN) / (c.S1_DB_MAX - c.S1_DB_MIN) * 255, 0, 255)
 
                 vh_boosted = np.clip(vh_vis * 1.5, 0, 255).astype(np.uint8)
                 denom = nir + red_band
@@ -356,7 +359,7 @@ def fuse_life_machine(vh_path, tci_path, nirfc_path, out_name, inter_geom):
                     window.row_off:window.row_off + window.height,
                     window.col_off:window.col_off + window.width
                 ]
-                tci_alpha = tci_src.read(4, window=from_bounds(*win_bounds, tci_src.transform), out_shape=(window.height, window.width))
+                tci_alpha = tci_src.read(4, window=tci_src.window(*dst_bounds), out_shape=(window.height, window.width))
                 alpha_norm = (tci_alpha.astype(float) / 255.0) * (win_geom_mask.astype(float) / 255.0)
 
                 alpha_final = (alpha_norm * 255).astype(np.uint8)
@@ -371,12 +374,12 @@ def fuse_life_machine(vh_path, tci_path, nirfc_path, out_name, inter_geom):
         cog.convert_to_cog(out_path)
 
 
-def run_correlation():
+def run_correlation() -> None:
     """Main entry point for S1/S2 correlation."""
     matches = find_overlaps()
     if not matches:
         return
-    print(f"Found {len(matches)} potential S1/S2 matches.")
+    print(f"Found {len(matches)} potential S1/S2 matches.", flush=True)
     for match in matches:
         vh_ana, tci_vis, s2_name, ndbi_ana, ndre_ana, nirfc_vis = get_processed_paths(match['s1'], match['s2'])
         fuse_radar_optical(vh_ana, tci_vis, s2_name, match['inter_geom'])
