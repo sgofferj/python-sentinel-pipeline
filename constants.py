@@ -17,37 +17,42 @@ import os
 from typing import Dict
 
 import numpy as np
+from dotenv import load_dotenv
+
+load_dotenv()
 
 BASE_DIR: str = os.path.dirname(os.path.abspath(__file__))
+TARGET_DIR: str = os.getenv("TARGET_DIR", BASE_DIR)
+OUT_BASE: str = os.path.join(TARGET_DIR, "output")
 
 DIRS: Dict[str, str] = {
     "DL": os.path.join(BASE_DIR, "temp"),
     "TMP": "/tmp",
-    "OUT": os.path.join(BASE_DIR, "output"),
+    "OUT": OUT_BASE,
     # --- VISUAL (8-bit RGBA for Leaflet) ---
-    "VIS_S1_VV": os.path.join(BASE_DIR, "output/visual/s1/vv"),
-    "VIS_S1_VH": os.path.join(BASE_DIR, "output/visual/s1/vh"),
-    "VIS_S1_RATIO": os.path.join(BASE_DIR, "output/visual/s1/ratio"),
-    "VIS_S2_TCI": os.path.join(BASE_DIR, "output/visual/s2/tci"),
-    "VIS_S2_NIRFC": os.path.join(BASE_DIR, "output/visual/s2/nirfc"),
-    "VIS_S2_NDVI": os.path.join(BASE_DIR, "output/visual/s2/ndvi"),
-    "VIS_S2_NDRE": os.path.join(BASE_DIR, "output/visual/s2/ndre"),
-    "VIS_S2_NDBI": os.path.join(BASE_DIR, "output/visual/s2/ndbi"),
-    "VIS_S2_NDBI_CLEAN": os.path.join(BASE_DIR, "output/visual/s2/ndbi_clean"),
-    "VIS_S2_NBR": os.path.join(BASE_DIR, "output/visual/s2/nbr"),
-    "VIS_S2_CAMO": os.path.join(BASE_DIR, "output/visual/s2/camo"),
-    "VIS_S2_AP": os.path.join(BASE_DIR, "output/visual/s2/ap"),
-    "VIS_FUSED": os.path.join(BASE_DIR, "output/visual/fused"),
+    "VIS_S1_VV": os.path.join(OUT_BASE, "visual/s1/vv"),
+    "VIS_S1_VH": os.path.join(OUT_BASE, "visual/s1/vh"),
+    "VIS_S1_RATIO": os.path.join(OUT_BASE, "visual/s1/ratio"),
+    "VIS_S2_TCI": os.path.join(OUT_BASE, "visual/s2/tci"),
+    "VIS_S2_NIRFC": os.path.join(OUT_BASE, "visual/s2/nirfc"),
+    "VIS_S2_NDVI": os.path.join(OUT_BASE, "visual/s2/ndvi"),
+    "VIS_S2_NDRE": os.path.join(OUT_BASE, "visual/s2/ndre"),
+    "VIS_S2_NDBI": os.path.join(OUT_BASE, "visual/s2/ndbi"),
+    "VIS_S2_NDBI_CLEAN": os.path.join(OUT_BASE, "visual/s2/ndbi_clean"),
+    "VIS_S2_NBR": os.path.join(OUT_BASE, "visual/s2/nbr"),
+    "VIS_S2_CAMO": os.path.join(OUT_BASE, "visual/s2/camo"),
+    "VIS_S2_AP": os.path.join(OUT_BASE, "visual/s2/ap"),
+    "VIS_FUSED": os.path.join(OUT_BASE, "visual/fused"),
     # --- ANALYTIC (Float32 for Change Detection) ---
-    "ANA_S1_VV": os.path.join(BASE_DIR, "output/analytic/s1/vv"),
-    "ANA_S1_VH": os.path.join(BASE_DIR, "output/analytic/s1/vh"),
-    "ANA_S2_NDVI": os.path.join(BASE_DIR, "output/analytic/s2/ndvi"),
-    "ANA_S2_NDRE": os.path.join(BASE_DIR, "output/analytic/s2/ndre"),
-    "ANA_S2_NDBI": os.path.join(BASE_DIR, "output/analytic/s2/ndbi"),
-    "ANA_S2_NBR": os.path.join(BASE_DIR, "output/analytic/s2/nbr"),
+    "ANA_S1_VV": os.path.join(OUT_BASE, "analytic/s1/vv"),
+    "ANA_S1_VH": os.path.join(OUT_BASE, "analytic/s1/vh"),
+    "ANA_S2_NDVI": os.path.join(OUT_BASE, "analytic/s2/ndvi"),
+    "ANA_S2_NDRE": os.path.join(OUT_BASE, "analytic/s2/ndre"),
+    "ANA_S2_NDBI": os.path.join(OUT_BASE, "analytic/s2/ndbi"),
+    "ANA_S2_NBR": os.path.join(OUT_BASE, "analytic/s2/nbr"),
     # --- System ---
-    "S1S2_LEGENDS": os.path.join(BASE_DIR, "output/legends"),
-    "S1S2_LOGS": os.path.join(BASE_DIR, "output/logs"),
+    "S1S2_LEGENDS": os.path.join(OUT_BASE, "legends"),
+    "S1S2_LOGS": os.path.join(OUT_BASE, "logs"),
 }
 
 # Create missing directories
@@ -86,16 +91,18 @@ S1_DB_MAX: float = 0.0
 S1_RATIO_MIN: float = 0.5
 S1_RATIO_MAX: float = 5.0
 
-S2_REF_MIN: int = 0
-S2_REF_MAX: int = 8000
+S2_REF_MIN: int = 1000
+S2_REF_MAX: int = 4000
 
-# Multi-temporal Normalization percentiles (if needed)
+# Multi-temporal Normalization percentiles
 S2_PCT_MIN: int = 2
 S2_PCT_MAX: int = 98
 
 # ----- NDVI Integrated Palette (from ndvi2.txt) ---------------------
 NDVI_PALETTE: Dict[str, np.ndarray] = {
-    "values": np.array([-1.0, -0.2, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]),
+    "values": np.array(
+        [-1.0, -0.2, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    ),
     "r": np.array([0, 165, 204, 255, 255, 255, 255, 217, 163, 105, 61, 38, 0]),
     "g": np.array([0, 0, 153, 255, 235, 190, 145, 230, 204, 179, 145, 115, 68]),
     "b": np.array([0, 38, 0, 204, 175, 115, 55, 115, 89, 64, 43, 26, 0]),

@@ -12,18 +12,20 @@
 """
 Sentinel-1 GRD Radiometric Calibration module.
 Handles Sigma0 calibration and thermal noise removal using high-concurrency math.
+Uses GDAL for robust georeferencing (GCPs).
 """
 
 import gc
 import glob
 import os
+import queue
 import threading
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import rasterio as rio
 from lxml import etree
+from osgeo import gdal
 from rasterio.windows import Window
 from scipy.interpolate import interp1d
 
@@ -38,7 +40,7 @@ except ImportError:
     HAS_CUDA = False
 
 
-class S1Calibrator:
+class S1Calibrator:  # pylint: disable=too-few-public-methods
     """
     S1Calibrator handles radiometric calibration and thermal noise removal
     for Sentinel-1 GRD products using a memory-efficient, multi-threaded approach.
@@ -106,21 +108,7 @@ class S1Calibrator:
                 vectors.append({"line": line, "pixels": pixel_indices, "noise": noise_values})
         return vectors
 
-    def _interpolate_vectors(self, vectors: List[Dict[str, Any]], total_pixels: int, key: str) -> Any:
-        """Interpolates sparse vectors to a full-image grid."""
-        if not vectors:
-            raise ValueError(f"No vectors found for key: {key}")
-        lines = np.array([v["line"] for v in vectors])
-        grid_values = []
-        for v in vectors:
-            f = interp1d(v["pixels"], v[key], kind="linear", fill_value="extrapolate")
-            grid_values.append(f(np.arange(total_pixels)))
-        full_lut_func = interp1d(
-            lines, np.array(grid_values), axis=0, kind="linear", fill_value="extrapolate"
-        )
-        del grid_values
-        return full_lut_func
-
+    # pylint: disable=too-many-arguments,too-many-locals,too-many-statements
     def calibrate(
         self,
         polarization: str,
@@ -130,100 +118,159 @@ class S1Calibrator:
         workers: int = 4,
     ) -> None:
         """
-        Performs calibration and noise removal using a multi-threaded windowed approach.
+        Performs calibration and noise removal.
+        Uses GDAL Translate to ensure GCPs are perfectly preserved.
         """
         cal_xml, noise_xml = self._get_xml_files(polarization)
         sds_string = self._get_subdataset_string(polarization)
         cal_vectors = self._parse_calibration_xml(cal_xml)
         noise_vectors = self._parse_noise_xml(noise_xml)
 
-        with rio.open(sds_string) as src:
-            width: int = src.width
-            height: int = src.height
-            print("Preparing LUT interpolation...", flush=True)
-            cal_func = self._interpolate_vectors(cal_vectors, width, "sigma")
-            noise_func = self._interpolate_vectors(noise_vectors, width, "noise")
+        # 1. Create the output file with proper metadata using GDAL Translate
+        # This copies GCPs, CRS, etc. perfectly from the subdataset.
+        print(f"Initializing {os.path.basename(output_path)} with source metadata...", flush=True)
+        gdal.Translate(
+            output_path, 
+            sds_string, 
+            outputType=gdal.GDT_Float32,
+            creationOptions=["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=YES", "BLOCKXSIZE=256", "BLOCKYSIZE=256"]
+        )
 
-            profile = src.profile.copy()
-            profile.update(
-                dtype=rio.float32,
-                count=2,
-                driver="GTiff",
-                compress="deflate",
-                tiled=True,
-                blockxsize=256,
-                blockysize=256,
-                nodata=None,
-                num_threads=workers,
-            )
-            if "transform" in profile:
-                del profile["transform"]
+        with rio.open(output_path, "r+") as dst:
+            width: int = dst.width
+            height: int = dst.height
+            
+            # --- INTERPOLATION PREP ---
+            lines = np.array([v["line"] for v in cal_vectors])
+            
+            if HAS_CUDA:
+                print("Using CUDA for LUT Interpolation and Calibration.", flush=True)
+                grid_vals_sigma = []
+                grid_vals_noise = []
+                for i, v in enumerate(cal_vectors):
+                    f_s = interp1d(v["pixels"], v["sigma"], kind="linear", fill_value="extrapolate")
+                    grid_vals_sigma.append(f_s(np.arange(width)))
+                    nv = next((n for n in noise_vectors if n["line"] == v["line"]), noise_vectors[min(i, len(noise_vectors)-1)])
+                    f_n = interp1d(nv["pixels"], nv["noise"], kind="linear", fill_value="extrapolate")
+                    grid_vals_noise.append(f_n(np.arange(width)))
+                
+                g_lines = cp.array(lines, dtype=cp.float32)
+                g_lut_sigma = cp.array(grid_vals_sigma, dtype=cp.float32)
+                g_lut_noise = cp.array(grid_vals_noise, dtype=cp.float32)
+                del grid_vals_sigma, grid_vals_noise
+            else:
+                print("GPU Unavailble: Falling back to CPU for LUT Interpolation.", flush=True)
+                grid_values_s = []
+                grid_values_n = []
+                for v in cal_vectors:
+                    f = interp1d(v["pixels"], v["sigma"], kind="linear", fill_value="extrapolate")
+                    grid_values_s.append(f(np.arange(width)))
+                for v in noise_vectors:
+                    f = interp1d(v["pixels"], v["noise"], kind="linear", fill_value="extrapolate")
+                    grid_values_n.append(f(np.arange(width)))
+                
+                cal_func = interp1d(lines, np.array(grid_values_s), axis=0, kind="linear", fill_value="extrapolate")
+                noise_func = interp1d(np.array([v["line"] for v in noise_vectors]), np.array(grid_values_n), axis=0, kind="linear", fill_value="extrapolate")
+                del grid_values_s, grid_values_n
 
-            write_lock = threading.Lock()
+            read_queue: queue.Queue = queue.Queue(maxsize=2)
+            write_queue: queue.Queue = queue.Queue(maxsize=2)
 
-            def process_window(row_off: int) -> None:
-                rows = min(block_size, height - row_off)
-                window = Window(0, row_off, width, rows)
-                with rio.open(sds_string) as t_src:
-                    dn = t_src.read(1, window=window).astype(np.float32)
+            def reader_thread() -> None:
+                try:
+                    # Open source subdataset for reading original DN
+                    with rio.open(sds_string) as t_src:
+                        for row_off in range(0, height, block_size):
+                            rows = min(block_size, height - row_off)
+                            window = Window(0, row_off, width, rows)
+                            dn = t_src.read(1, window=window).astype(np.float32)
+                            
+                            if not HAS_CUDA:
+                                current_lines = np.arange(row_off, row_off + rows)
+                                cal_block = cal_func(current_lines).astype(np.float32)
+                                noise_block = noise_func(current_lines).astype(np.float32)
+                                read_queue.put((window, dn, cal_block, noise_block), timeout=120)
+                            else:
+                                read_queue.put((window, dn, row_off, rows), timeout=120)
+                        read_queue.put(None, timeout=120)
+                except Exception as e:
+                    print(f"\nCRITICAL: Reader thread failed: {e}", flush=True)
+                    read_queue.put(None)
 
-                valid_mask = dn > 0
-                current_lines = np.arange(row_off, row_off + rows)
-                cal_block = cal_func(current_lines).astype(np.float32)
-                noise_block = noise_func(current_lines).astype(np.float32)
+            def writer_thread(dst_handle: Any) -> None:
+                try:
+                    while True:
+                        item = write_queue.get(timeout=120)
+                        if item is None:
+                            write_queue.task_done()
+                            break
+                        window, sigma0 = item
+                        dst_handle.write(sigma0, 1, window=window)
+                        write_queue.task_done()
+                except Exception as e:
+                    print(f"\nCRITICAL: Writer thread failed: {e}", flush=True)
 
-                if HAS_CUDA:
-                    m_pool = cp.get_default_memory_pool()
-                    dn_g = cp.array(dn)
-                    valid_g = cp.array(valid_mask)
-                    cal_g = cp.array(cal_block)
-                    noise_g = cp.array(noise_block)
+            t_read = threading.Thread(target=reader_thread, daemon=True)
+            t_write = threading.Thread(target=writer_thread, args=(dst,), daemon=True)
+            t_read.start(); t_write.start()
 
-                    sigma0_g = cp.zeros_like(dn_g)
-                    sigma0_g[valid_g] = cp.maximum(
-                        (cp.square(dn_g[valid_g]) - noise_g[valid_g])
-                        / cp.square(cal_g[valid_g]),
-                        1e-9,
-                    )
+            while True:
+                try:
+                    item = read_queue.get(timeout=120)
+                except queue.Empty:
+                    print("\nCRITICAL: Reader thread timed out (Deadlock?).", flush=True)
+                    break
+                    
+                if item is None:
+                    write_queue.put(None, timeout=120); read_queue.task_done()
+                    break
+                
+                try:
+                    if HAS_CUDA:
+                        window, dn, row_off, rows = item
+                        m_pool = cp.get_default_memory_pool()
+                        g_dn = cp.array(dn)
+                        g_valid = g_dn > 0
+                        target_lines = cp.arange(row_off, row_off + rows, dtype=cp.float32)
+                        
+                        def gpu_interp_2d(lut):
+                            idx = cp.searchsorted(g_lines, target_lines) - 1
+                            idx = cp.clip(idx, 0, len(lines) - 2)
+                            x0 = g_lines[idx]; x1 = g_lines[idx+1]
+                            weight = (target_lines - x0) / (x1 - x0)
+                            y0 = lut[idx]; y1 = lut[idx+1]
+                            return y0 + weight[:, cp.newaxis] * (y1 - y0)
 
-                    alpha_g = cp.zeros_like(dn_g)
-                    alpha_g[valid_g] = 255.0
+                        g_cal = gpu_interp_2d(g_lut_sigma)
+                        g_noise = gpu_interp_2d(g_lut_noise)
+                        
+                        g_sigma0 = cp.zeros_like(g_dn)
+                        # Ensure valid pixels are NEVER absolute 0 to preserve nodata=0 meaning
+                        g_sigma0[g_valid] = cp.maximum((cp.square(g_dn[g_valid]) - g_noise[g_valid]) / cp.square(g_cal[g_valid]), 1e-9)
+                        
+                        sigma0 = cp.asnumpy(g_sigma0)
+                        del g_dn, g_valid, g_cal, g_noise, g_sigma0, target_lines
+                        m_pool.free_all_blocks()
+                    else:
+                        window, dn, cal_block, noise_block = item
+                        valid_mask = dn > 0
+                        sigma0 = np.zeros_like(dn)
+                        sigma0[valid_mask] = np.maximum((np.square(dn[valid_mask]) - noise_block[valid_mask]) / np.square(cal_block[valid_mask]), 1e-9)
 
-                    sigma0 = cp.asnumpy(sigma0_g)
-                    alpha_block = cp.asnumpy(alpha_g)
-                    del dn_g, valid_g, cal_g, noise_g, sigma0_g, alpha_g
-                    m_pool.free_all_blocks()
-                else:
-                    sigma0 = np.zeros_like(dn)
-                    sigma0[valid_mask] = np.maximum(
-                        (np.square(dn[valid_mask]) - noise_block[valid_mask])
-                        / np.square(cal_block[valid_mask]),
-                        1e-9,
-                    )
-                    alpha_block = np.zeros_like(dn)
-                    alpha_block[valid_mask] = 255.0
+                    write_queue.put((window, sigma0), timeout=120)
+                except Exception as e:
+                    print(f"\nCRITICAL: Calibration loop failed: {e}", flush=True)
+                    break
+                
+                print(f"Processed strip starting at line {window.row_off}/{height}", end="\r", flush=True)
+                read_queue.task_done()
 
-                with write_lock:
-                    dst.write(sigma0, 1, window=window)
-                    dst.write(alpha_block, 2, window=window)
-                print(f"Processed strip starting at line {row_off}/{height}", end="\r", flush=True)
+            t_read.join(); t_write.join()
 
-            with rio.open(output_path, "w", **profile) as dst:
-                if src.gcps and src.gcps[0]:
-                    gcp_list, gcp_crs = src.gcps
-                    dst.gcps = (gcp_list, gcp_crs or rio.crs.CRS.from_epsg(4326))
-                    dst.crs = gcp_crs or rio.crs.CRS.from_epsg(4326)
+            if build_ov:
+                func.perf_logger.start_step(f"S1 Internal Overviews: {os.path.basename(output_path)}")
+                dst.build_overviews([2, 4, 8, 16, 32, 64], rio.enums.Resampling.average)
+                func.perf_logger.end_step()
 
-                with ThreadPoolExecutor(max_workers=workers) as executor:
-                    executor.map(process_window, range(0, height, block_size))
-
-                if build_ov:
-                    func.perf_logger.start_step(
-                        f"S1 Internal Overviews: {os.path.basename(output_path)}"
-                    )
-                    dst.build_overviews([2, 4, 8, 16, 32, 64], rio.enums.Resampling.average)
-                    func.perf_logger.end_step()
-
-        del cal_func, noise_func
         gc.collect()
         print(f"\nCalibration complete: {output_path}", flush=True)
