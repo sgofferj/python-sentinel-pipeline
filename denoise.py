@@ -148,7 +148,11 @@ def gamma_map_filter(img: np.ndarray, size: int = 5, looks: int = 1) -> np.ndarr
         * (
             (alpha - looks - 1)
             + np.sqrt(
-                np.maximum((alpha - looks - 1) ** 2 + 4 * alpha * looks * img_f / (img_mean + 1e-9), 0)
+                np.maximum(
+                    (alpha - looks - 1) ** 2
+                    + 4 * alpha * looks * img_f / (img_mean + 1e-9),
+                    0,
+                )
             )
         )
         / (2 * alpha + 1e-9)
@@ -174,7 +178,11 @@ def _gamma_map_cuda(img: np.ndarray, size: int = 5, looks: int = 1) -> np.ndarra
         * (
             (alpha - looks - 1)
             + cp.sqrt(
-                cp.maximum((alpha - looks - 1) ** 2 + 4 * alpha * looks * img_gpu / (img_mean + 1e-9), 0)
+                cp.maximum(
+                    (alpha - looks - 1) ** 2
+                    + 4 * alpha * looks * img_gpu / (img_mean + 1e-9),
+                    0,
+                )
             )
         )
         / (2 * alpha + 1e-9)

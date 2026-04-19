@@ -11,6 +11,7 @@
 
 """
 Global inventory manager for compiling visual product metadata.
+Simplified to just collect pre-processed metadata.
 """
 
 import json
@@ -28,7 +29,7 @@ def rebuild_inventory() -> None:
     """
     func.perf_logger.start_step("Rebuilding Global Inventory")
 
-    visual_root: str = os.path.join(c.BASE_DIR, "output/visual")
+    visual_root: str = os.path.join(c.DIRS["OUT"], "visual")
     inventory: Dict[str, List[Dict[str, Any]]] = {"layers": []}
 
     # Walk through all visual subdirectories
@@ -39,24 +40,32 @@ def rebuild_inventory() -> None:
                 try:
                     with open(json_path, "r", encoding="utf-8") as f:
                         meta: Dict[str, Any] = json.load(f)
-                        # Add relative path for frontend consumption
-                        # We want the path relative to the 'output' directory
-                        rel_path: str = os.path.relpath(
-                            json_path.replace(".json", ".tif"), c.DIRS["OUT"]
-                        )
+                        
+                        tif_path: str = json_path.replace(".json", ".tif")
+                        if not os.path.exists(tif_path):
+                            continue
+
+                        rel_path: str = os.path.relpath(tif_path, c.DIRS["OUT"])
                         meta["path"] = rel_path
+                        meta["file_size_bytes"] = os.path.getsize(tif_path)
+
                         inventory["layers"].append(meta)
                 except Exception as e:  # pylint: disable=broad-exception-caught
                     print(f"Warning: Could not index {file}: {e}", flush=True)
 
     # Sort layers by acquisition time (Newest first)
-    inventory["layers"].sort(key=lambda x: str(x.get("acquisition_time", "")), reverse=True)
+    inventory["layers"].sort(
+        key=lambda x: str(x.get("acquisition_time", "")), reverse=True
+    )
 
     inventory_path: str = os.path.join(c.DIRS["OUT"], "visual/inventory.json")
     with open(inventory_path, "w", encoding="utf-8") as f:
-        json.dump(inventory, f, indent=2)
+        json.dump(inventory, f, separators=(",", ":"))
 
-    print(f"Global inventory updated: {len(inventory['layers'])} layers indexed.", flush=True)
+    print(
+        f"Global inventory updated: {len(inventory['layers'])} layers indexed.",
+        flush=True,
+    )
     func.perf_logger.end_step()
 
 

@@ -161,11 +161,15 @@ class connect:  # pylint: disable=invalid-name
                     f"{coords[2]} {coords[3]},{coords[0]} {coords[3]},"
                     f"{coords[0]} {coords[1]}))"
                 )
-                spatial_filter = f"OData.CSC.Intersects(area=geography'SRID=4326;{wkt}')"
+                spatial_filter = (
+                    f"OData.CSC.Intersects(area=geography'SRID=4326;{wkt}')"
+                )
             except Exception:  # pylint: disable=broad-exception-caught
                 pass
         elif geometry:
-            spatial_filter = f"OData.CSC.Intersects(area=geography'SRID=4326;{geometry}')"
+            spatial_filter = (
+                f"OData.CSC.Intersects(area=geography'SRID=4326;{geometry}')"
+            )
 
         if spatial_filter:
             filters.append(spatial_filter)
@@ -233,16 +237,33 @@ class connect:  # pylint: disable=invalid-name
         )
         return result.groups()[0] if result else None
 
-    def download(self, uuid: str, filename: str, directory: str = ".") -> bool:
-        """Downloads a dataset from Copernicus."""
-        url: str = f"https://download.dataspace.copernicus.eu/odata/v1/Products({uuid})/$value"
+    def download(self, uuid: str, filename: str, directory: str = ".", retries: int = 3) -> bool:
+        """Downloads a dataset from Copernicus with retry logic."""
+        url: str = (
+            f"https://download.dataspace.copernicus.eu/odata/v1/Products({uuid})/$value"
+        )
         headers: Dict[str, str] = {"Authorization": f"Bearer {self.token}"}
 
-        print(f"Downloading {filename}...", flush=True)
-        r = req.get(url, headers=headers, stream=True, timeout=60)
-        r.raise_for_status()
+        for attempt in range(retries):
+            try:
+                print(f"Downloading {filename} (Attempt {attempt + 1}/{retries})...", flush=True)
+                # Increase timeout for large file streams
+                r = req.get(url, headers=headers, stream=True, timeout=120)
+                r.raise_for_status()
 
-        with open(f"{directory}/{filename}.zip", "wb") as file:
-            for chunk in r.iter_content(chunk_size=1024 * 1024):
-                file.write(chunk)
-        return True
+                with open(f"{directory}/{filename}.zip", "wb") as file:
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            file.write(chunk)
+                return True
+            except (req.exceptions.RequestException, ConnectionError) as e:
+                print(f"Download failed: {e}", flush=True)
+                if attempt < retries - 1:
+                    wait = (attempt + 1) * 10
+                    print(f"Retrying in {wait}s...", flush=True)
+                    import time
+                    time.sleep(wait)
+                    self.refreshToken() # Refresh token just in case it expired during long wait
+                else:
+                    raise e
+        return False

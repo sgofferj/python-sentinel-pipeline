@@ -19,7 +19,6 @@ from __future__ import annotations
 
 from ._class import connect
 
-
 __all__ = [
     "connect"  # ,
     #    "takFunction",

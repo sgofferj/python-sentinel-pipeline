@@ -33,19 +33,22 @@ def convert_to_cog(path: str) -> None:
     tmp_path: str = path + ".tmp.tif"
 
     # Use configurable WORKERS for multi-threaded compression
+    # Check if we are in a parallel worker with restricted threads
+    num_threads = os.getenv("GDAL_NUM_THREADS", str(c.WORKERS))
+
     cmd: List[str] = [
         "gdal_translate",
         "-of",
         "COG",
         "-co",
-        "COPY_SRC_OVERVIEWS=YES",
+        "BIGTIFF=YES",
         "-co",
         "COMPRESS=DEFLATE",
         "-co",
         "LEVEL=6",
         "--config",
         "GDAL_NUM_THREADS",
-        str(c.WORKERS),
+        num_threads,
         path,
         tmp_path,
     ]

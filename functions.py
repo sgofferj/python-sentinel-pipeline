@@ -180,13 +180,19 @@ class PerformanceLogger:
             return
         duration: float = time.time() - self.step_start
         peak_mem: float = max(self.mem_samples) if self.mem_samples else 0
-        avg_cpu: float = sum(self.cpu_samples) / len(self.cpu_samples) if self.cpu_samples else 0
+        avg_cpu: float = (
+            sum(self.cpu_samples) / len(self.cpu_samples) if self.cpu_samples else 0
+        )
         peak_cpu: float = max(self.cpu_samples) if self.cpu_samples else 0
 
         gpu_part: str = ""
         if self.use_gpu_step and HAS_CUDA:
-            peak_gpu_mem: float = max(self.gpu_mem_samples) if self.gpu_mem_samples else 0
-            peak_gpu_util: float = max(self.gpu_util_samples) if self.gpu_util_samples else 0
+            peak_gpu_mem: float = (
+                max(self.gpu_mem_samples) if self.gpu_mem_samples else 0
+            )
+            peak_gpu_util: float = (
+                max(self.gpu_util_samples) if self.gpu_util_samples else 0
+            )
             gpu_part = f" | {peak_gpu_mem:.0f}MiB | {peak_gpu_util:.0f}%"
         elif HAS_CUDA:
             gpu_part = " | N/A | N/A"
@@ -214,7 +220,10 @@ class PerformanceLogger:
             f.write(f"--- Pipeline Run Finished at {datetime.now().isoformat()} ---\n")
             f.write(f"Total Duration: {total_duration:.2f}s\n")
             f.flush()
-        print(f"\n*** Pipeline Run Complete. Total time: {total_duration:.2f}s", flush=True)
+        print(
+            f"\n*** Pipeline Run Complete. Total time: {total_duration:.2f}s",
+            flush=True,
+        )
 
     def log_info(self, msg: str) -> None:
         """Writes an informational message to the log."""
@@ -287,14 +296,22 @@ def scale_ones(ds_arr: np.ndarray) -> np.ndarray:
 
 
 def get_window(
-    dst_crs: rio.crs.CRS, dst_transform: rio.transform.Affine, width: int, height: float, box: str
+    dst_crs: rio.crs.CRS,
+    dst_transform: rio.transform.Affine,
+    width: int,
+    height: float,
+    box: str,
 ) -> Window:
     """Calculates a pixel window from a bounding box string."""
     west, south, east, north = map(float, box.split(","))
     left, bottom, right, top = transform_bounds(
         rio.CRS.from_epsg(4326), dst_crs, west, south, east, north, densify_pts=21
     )
-    win = from_bounds(left, bottom, right, top, transform=dst_transform).round_offsets().round_lengths()
+    win = (
+        from_bounds(left, bottom, right, top, transform=dst_transform)
+        .round_offsets()
+        .round_lengths()
+    )
     return win.intersection(Window(0, 0, width, height))
 
 
@@ -309,7 +326,9 @@ def output_exists(name: str) -> bool:
 
 def write_tiff_rgb(ds_arr: np.ndarray, profile: Dict[str, Any], name: str) -> None:
     """Writes an RGB array to a GeoTIFF."""
-    profile.update(photometric="RGB", count=3, dtype=rio.uint8, compress="deflate", driver="GTiff")
+    profile.update(
+        photometric="RGB", count=3, dtype=rio.uint8, compress="deflate", driver="GTiff"
+    )
     with rio.open(f"{name}.tif", "w", **profile) as dds:
         dds.write(ds_arr)
         dds.close()
