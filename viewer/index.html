@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Satelliittikuvat (OpenLayers Edition)</title>
+    <!-- OpenLayers CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@v10.3.1/ol.css">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="css/style.css">
+    </head>
+
+<body>
+    <div id="map"></div>
+    
+    <div id="logo-container">
+        <img src="logo.png" alt="Logo">
+    </div>
+
+    <div id="legend-panel" class="map-overlay">
+        <!-- Legend content will appear here -->
+    </div>
+
+    <div id="sidebar">
+        <div class="header">
+            <h1>Satelliittikuvat</h1>
+            <p>Valitse kartalle päällekkäin asetettavat tasot.</p>
+            <button id="deselect-all" class="deselect-btn">Poista kaikki valinnat</button>
+        </div>
+        <div id="base-picker" class="base-area">
+            <!-- Baselayer toggles will appear here -->
+        </div>
+        <div id="layer-picker" class="scroll-area">
+            <div id="loading">
+                <div class="progress-container">
+                    <div id="progress-bar" class="progress-bar"></div>
+                </div>
+                <p id="loading-text">Ladataan inventaariota...</p>
+            </div>
+        </div>
+    </div>
+
+    <div id="map-spinner">
+        <div class="spinner"></div>
+    </div>
+
+    <!-- Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/geotiff"></script>
+    <script src="https://cdn.jsdelivr.net/npm/ol@v10.3.1/dist/ol.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

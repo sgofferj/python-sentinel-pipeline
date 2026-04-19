@@ -8,366 +8,303 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at https://www.gnu.org/licenses/gpl-3.0.en.html
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either expressed or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
 
-import constants as c
-import functions as func
-from osgeo import gdal
-import rasterio as rio
-import numpy as np
-import re
+"""
+Sentinel-1 GRD processing module.
+Handles calibration, warping, and single-pass rendering of SAR products.
+"""
+
+import gc
 import os
-import shutil
+import queue
+import re
+import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Optional
+
+import numpy as np
+import rasterio as rio
+from osgeo import gdal
+from rasterio.enums import ColorInterp
+
+import cog_finalizer as cog
+import constants as c
+import denoise
+import functions as func
+import legends
+import metadata_engine as meta
+from s1_calibrator import S1Calibrator
+import gpu_warp
+
+# --- CUDA Acceleration ---
+try:
+    import cupy as cp
+
+    HAS_CUDA: bool = os.getenv("DISABLE_GPU", "false").lower() not in ("true", "1")
+except ImportError:
+    HAS_CUDA = False
 
 gdal.UseExceptions()
 
 
-# ----- Sentinel 1 helper functions ---------------------------------
-def get_data(name):
-    """Gets the start and end time from a Sentinel 1 dataset name"""
-    result = re.search(r".*S1._.*_.*_.*_(\d+T\d+_\d+T\d+)_.*", name)
-    times = result.groups()[0]
-    return times
-
-
-def get_uri(name):
-    """Gets the product URI from a Sentinel 1 dataset name"""
-    result = re.search(r".*(S1._.*_.*_.*_\d+T\d+_\d+T\d+_.+_.+\.SAFE).*", name)
-    uri = result.groups()[0]
-    return uri
-
-
-def get_percentiles(ds):
-    dataset = gdal.Open(ds)
-    array = dataset.ReadAsArray()
-    min = np.percentile(array, c.S1_PCT_MIN)
-    max = np.percentile(array, c.S1_PCT_MAX)
-    del array
-    del dataset
-    return min, max
-
-
-def get_minmax(ds):
-    dataset = gdal.Open(ds)
-    array = dataset.ReadAsArray()
-    min = np.min(array)
-    max = np.max(array)
-    del array
-    del dataset
-    return min, max
-
-
-# ----- Sentinel 1 pipeline functions -------------------------------
-
-
-def prepare(ds):
-    dsvv = f"SENTINEL1_CALIB:UNCALIB:{ds}/manifest.safe:IW_VV:AMPLITUDE"
-    dsvh = f"SENTINEL1_CALIB:UNCALIB:{ds}/manifest.safe:IW_VH:AMPLITUDE"
-    print("Extracting bands and reprojecting...")
-    print("VV")
-    gdal.Warp("/tmp/vv.tif", dsvv, dstSRS="EPSG:3857")
-    print("VH")
-    gdal.Warp("/tmp/vh.tif", dsvh, dstSRS="EPSG:3857")
-    print("Scaling...")
-    print("VV")
-    min, max = get_percentiles("/tmp/vv.tif")
-    gdal.Translate(
-        "/tmp/vvn.tif",
-        "/tmp/vv.tif",
-        outputType=gdal.gdalconst.GDT_Byte,
-        scaleParams=[[min, max, 0, 255]],
+def build_overviews_gdal(path: str) -> None:
+    """Uses gdaladdo for memory-efficient overview building."""
+    func.perf_logger.start_step(f"S1 Overviews: {os.path.basename(path)}")
+    print(
+        f"Building overviews for {os.path.basename(path)} (External Process)...",
+        flush=True,
     )
-    print("VH")
-    min, max = get_percentiles("/tmp/vh.tif")
-    gdal.Translate(
-        "/tmp/vhn.tif",
-        "/tmp/vh.tif",
-        outputType=gdal.gdalconst.GDT_Byte,
-        scaleParams=[[min, max, 0, 255]],
-    )
-
-
-def cleanup():
-    os.remove("/tmp/vv.tif")
-    os.remove("/tmp/vh.tif")
-    os.remove("/tmp/vvn.tif")
-    os.remove("/tmp/vhn.tif")
-
-
-def calc_VV(name):
-    """Creates Sentinel 1 VV image"""
-    name = f"{name}-VV"
-    print(name)
-    if not func.outputExists(name):
-        shutil.copyfile("/tmp/vvn.tif", f"{name}.tif")
-        with rio.open(f"{name}.tif") as sds:
-            profile = sds.profile
-            sds.close()
-        func.writeMask(name, profile)
-
-    else:
-        print(f"{name} exists, not calculating it again.")
-
-
-def calc_VH(name):
-    """Creates Sentinel 1 VH image"""
-    name = f"{name}-VH"
-    print(name)
-    if not func.outputExists(name):
-        shutil.copyfile("/tmp/vhn.tif", f"{name}.tif")
-        with rio.open(f"{name}.tif") as sds:
-            profile = sds.profile
-            sds.close()
-        func.writeMask(name, profile)
-
-    else:
-        print(f"{name} exists, not calculating it again.")
-
-
-def calc_ratiovvvh(name):
-    """Creates Sentinel 1 ratio image (VV/VH)"""
-    name = f"{name}-RATIOVVVH"
-    print(name)
-    if not func.outputExists(name):
-        with rio.open("/tmp/vvn.tif") as sds:
-            profile = sds.profile
-            vv = sds.read(1)
-            sds.close()
-        with rio.open("/tmp/vhn.tif") as sds:
-            vh = sds.read(1)
-            sds.close()
-        del sds
-
-        print("Calculating ratio VV/VH...")
-        ratio = np.zeros(vv.shape, dtype=rio.float32)
-        ratio = (vv / (vh + (vh == 0))).astype(rio.float32)
-
-        print("Writing ratio temp file")
-        profile.update(dtype=rio.float32, compress="deflate")
-        with rio.open("/tmp/ratio.tif", "w", **profile) as dds:
-            dds.write(ratio, indexes=1)
-            dds.close()
-        del ratio
-
-        print("Scaling ratio band...")
-        min, max = get_percentiles("/tmp/ratio.tif")
-        gdal.Translate(
-            "/tmp/ration.tif",
-            "/tmp/ratio.tif",
-            outputType=gdal.gdalconst.GDT_Byte,
-            scaleParams=[[min, max, 0, 255]],
+    # Check if we are in a parallel worker with restricted threads
+    num_threads = os.getenv("GDAL_NUM_THREADS", str(c.WORKERS))
+    try:
+        subprocess.run(
+            [
+                "gdaladdo",
+                "-r",
+                "average",
+                "--config",
+                "GDAL_NUM_THREADS",
+                num_threads,
+                path,
+                "2",
+                "4",
+                "8",
+                "16",
+                "32",
+            ],
+            check=True,
+            capture_output=True,
         )
-        os.remove("/tmp/ratio.tif")
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        print(f"Warning: gdaladdo failed for {path}: {e}", flush=True)
+    func.perf_logger.end_step()
 
-        print("Merging bands...")
-        dataset = rio.open("/tmp/ration.tif")
-        ra = dataset.read(1)
-        del dataset
-        bands = np.array([vv, vh, ra])
-        del vv
-        del vh
-        del ra
 
-        print("Writing image...")
-        profile.update(driver="GTIFF", dtype=rio.uint8, count=3, compress="deflate")
-        func.writeTiffRGB(bands, profile, name)
-        del bands
-        func.writeMask(name, profile)
-        os.remove("/tmp/ration.tif")
+def prepare(ds_obj: gdal.Dataset) -> None:
+    """Calibrates, denoises, and reprojects S1 data to Float32 Sigma0 + Alpha."""
+    safe_path: str = os.path.dirname(ds_obj.GetDescription())
+    cal = S1Calibrator(safe_path)
+    print("Calibrating and denoising bands (with alpha mask)...", flush=True)
+
+    # 1. VV Calibration
+    func.perf_logger.start_step("S1 Prepare (VV Calibration)", use_gpu=True)
+    cal.calibrate("VV", "/tmp/vv_raw.tif", block_size=1024, build_ov=False, workers=c.WORKERS)
+    func.perf_logger.end_step()
+
+    # 2. VH Calibration
+    func.perf_logger.start_step("S1 Prepare (VH Calibration)", use_gpu=True)
+    cal.calibrate("VH", "/tmp/vh_raw.tif", block_size=1024, build_ov=False, workers=c.WORKERS)
+    func.perf_logger.end_step()
+
+    # 3. Warping
+    func.perf_logger.start_step("S1 Warp (EPSG:3857)")
+    print("Reprojecting to EPSG:3857...", flush=True)
+
+    if HAS_CUDA and os.getenv("ENABLE_GPU_WARP", "false").lower() in ("true", "1"):
+        print("Using CUDA Acceleration for S1 Warp...", flush=True)
+        # Warp VV and VH independently for maximum stability
+        gpu_warp.reproject_with_cuda("/tmp/vv_raw.tif", "/tmp/vv.tif", dst_crs="EPSG:3857", resolution=10, dst_alpha=True)
+        gpu_warp.reproject_with_cuda("/tmp/vh_raw.tif", "/tmp/vh.tif", dst_crs="EPSG:3857", resolution=10, dst_alpha=True)
     else:
-        print(f"{name} exists, not calculating it again.")
-
-
-def calc_ratiovhvv(name):
-    """Creates Sentinel 1 ratio image (VH/VV)"""
-    name = f"{name}-RATIOVHVV"
-    print(name)
-    if not func.outputExists(name):
-        with rio.open("/tmp/vv.tif") as sds:
-            profile = sds.profile
-            vv = sds.read(1)
-            sds.close()
-        with rio.open("/tmp/vh.tif") as sds:
-            vh = sds.read(1)
-            sds.close()
-        del sds
-
-        print("Calculating ratio VH/VV...")
-        ratio = np.zeros(vv.shape, dtype=rio.float32)
-        ratio = (vh / (vv + (vv == 0))).astype(rio.float32)
-
-        print("Writing ratio temp file")
-        profile.update(dtype=rio.float32, compress="deflate")
-        with rio.open("/tmp/ratio.tif", "w", **profile) as dds:
-            dds.write(ratio, indexes=1)
-            dds.close()
-        del ratio
-
-        print("Scaling ratio band...")
-        min, max = get_percentiles("/tmp/ratio.tif")
-        gdal.Translate(
-            "/tmp/ration.tif",
-            "/tmp/ratio.tif",
-            outputType=gdal.gdalconst.GDT_Byte,
-            scaleParams=[[min, max, 0, 255]],
+        # Standard CPU Path
+        warp_options = gdal.WarpOptions(
+            dstSRS="EPSG:3857", xRes=10, yRes=10,
+            multithread=True, warpMemoryLimit=2048,
+            warpOptions=[f"NUM_THREADS={c.WORKERS}"],
+            creationOptions=["TILED=YES", "COMPRESS=DEFLATE", "BLOCKXSIZE=256", "BLOCKYSIZE=256", "BIGTIFF=YES"],
+            dstAlpha=True, srcNodata=0,
         )
-        os.remove("/tmp/ratio.tif")
-
-        print("Merging bands...")
-        dataset = rio.open("/tmp/ration.tif")
-        ra = dataset.read(1)
-        del dataset
-        bands = np.array([vv, vh, ra])
-        del vv
-        del vh
-        del ra
-
-        print("Writing image...")
-        profile.update(driver="GTIFF", dtype=rio.uint8, count=3, compress="deflate")
-        func.writeTiffRGB(bands, profile, name)
-        del bands
-        func.writeMask(name, profile)
-        os.remove("/tmp/ration.tif")
-    else:
-        print(f"{name} exists, not calculating it again.")
+        gdal.Warp("/tmp/vv.tif", "/tmp/vv_raw.tif", options=warp_options)
+        gdal.Warp("/tmp/vh.tif", "/tmp/vh_raw.tif", options=warp_options)
+        
+    # Cleanup raw calibrated bands
+    for f in ["/tmp/vv_raw.tif", "/tmp/vh_raw.tif"]:
+        if os.path.exists(f): os.remove(f)
+        
+    func.perf_logger.end_step()
 
 
-def calc_product(name):
-    """Creates Sentinel 1 product image"""
-    name = f"{name}-PRODUCT"
-    print(name)
-    if not func.outputExists(name):
-        with rio.open("/tmp/vv.tif") as sds:
-            profile = sds.profile
-            vv = sds.read(1)
-            sds.close()
-        with rio.open("/tmp/vh.tif") as sds:
-            vh = sds.read(1)
-            sds.close()
-        del sds
+def cleanup() -> None:
+    """Removes intermediate temporary files."""
+    for f in ["/tmp/vv.tif", "/tmp/vh.tif"]:
+        if os.path.exists(f): os.remove(f)
 
-        print("Calculating product...")
-        product = np.zeros(vv.shape, dtype=rio.float32)
-        product = (vv * vh).astype(rio.float32)
 
-        print("Writing product temp file")
-        profile.update(dtype=rio.float32, compress="deflate")
-        with rio.open("/tmp/product.tif", "w", **profile) as dds:
-            dds.write(product, indexes=1)
-            dds.close()
-        del product
+def _render_internal(visual_paths: Dict[str, str], analytic_paths: Dict[str, str]) -> None:
+    """Macro-block threaded renderer for maximum GPU saturation using Double Buffering."""
+    func.perf_logger.start_step("S1 Single-Pass Render", use_gpu=True)
+    print(f"Starting Prefetch S1 Render (Block: {c.BLOCK_SIZE})...", flush=True)
 
-        print("Scaling product band...")
-        min, max = get_percentiles("/tmp/product.tif")
-        gdal.Translate(
-            "/tmp/productn.tif",
-            "/tmp/product.tif",
-            outputType=gdal.gdalconst.GDT_Byte,
-            scaleParams=[[min, max, 0, 255]],
+    db_min: float = c.S1_DB_MIN
+    db_range: float = c.S1_DB_MAX - c.S1_DB_MIN
+    ratio_min: float = c.S1_RATIO_MIN
+    ratio_range: float = c.S1_RATIO_MAX - c.S1_RATIO_MIN
+
+    with rio.open("/tmp/vv.tif") as vv_src, rio.open("/tmp/vh.tif") as vh_src:
+        print(f"Source Dimensions: {vv_src.width}x{vv_src.height}", flush=True)
+        
+        v_prof = vv_src.profile.copy()
+        v_prof.update(
+            photometric="RGB", count=4, dtype=rio.uint8, nodata=None,
+            compress="DEFLATE", tiled=True, blockxsize=256, blockysize=256, num_threads=2,
+            BIGTIFF="YES",
         )
-        os.remove("/tmp/product.tif")
 
-        print("Merging bands...")
-        dataset = rio.open("/tmp/productn.tif")
-        pr = dataset.read(1)
-        del dataset
-        bands = np.array([vv, vh, pr])
-        del vv
-        del vh
-        del pr
-
-        print("Writing image...")
-        profile.update(driver="GTIFF", dtype=rio.uint8, count=3, compress="deflate")
-        func.writeTiffRGB(bands, profile, name)
-        del bands
-        func.writeMask(name, profile)
-        os.remove("/tmp/productn.tif")
-    else:
-        print(f"{name} exists, not calculating it again.")
-
-
-def calc_difference(name):
-    """Creates Sentinel 1 difference image"""
-    name = f"{name}-DIFFERENCE"
-    print(name)
-    if not func.outputExists(name):
-        with rio.open("/tmp/vv.tif") as sds:
-            profile = sds.profile
-            vv = sds.read(1)
-            sds.close()
-        with rio.open("/tmp/vh.tif") as sds:
-            vh = sds.read(1)
-            sds.close()
-        del sds
-
-        print("Calculating difference...")
-        difference = np.zeros(vv.shape, dtype=rio.float32)
-        difference = (abs(vv - vh)).astype(rio.float32)
-
-        print("Writing difference temp file")
-        profile.update(dtype=rio.float32, compress="deflate")
-        with rio.open("/tmp/difference.tif", "w", **profile) as dds:
-            dds.write(difference, indexes=1)
-            dds.close()
-        del difference
-
-        print("Scaling difference band...")
-        min, max = get_percentiles("/tmp/difference.tif")
-        gdal.Translate(
-            "/tmp/differencen.tif",
-            "/tmp/difference.tif",
-            outputType=gdal.gdalconst.GDT_Byte,
-            scaleParams=[[min, max, 0, 255]],
+        a_prof = vv_src.profile.copy()
+        a_prof.update(
+            count=1, dtype=rio.float32, nodata=0,
+            compress="DEFLATE", tiled=True, blockxsize=256, blockysize=256, num_threads=2,
+            BIGTIFF="YES",
         )
-        os.remove("/tmp/difference.tif")
 
-        print("Merging bands...")
-        dataset = rio.open("/tmp/differencen.tif")
-        diff = dataset.read(1)
-        del dataset
-        bands = np.array([vv, vh, diff])
-        del vv
-        del vh
-        del diff
+        v_handles = {p: rio.open(path + ".tif", "w", **v_prof) for p, path in visual_paths.items() if not func.output_exists(path)}
+        a_handles = {p: rio.open(path + ".tif", "w", **a_prof) for p, path in analytic_paths.items() if not func.output_exists(path)}
 
-        print("Writing image...")
-        profile.update(driver="GTIFF", dtype=rio.uint8, count=3, compress="deflate")
-        func.writeTiffRGB(bands, profile, name)
-        del bands
-        func.writeMask(name, profile)
-        os.remove("/tmp/differencen.tif")
-    else:
-        print(f"{name} exists, not calculating it again.")
+        # Explicitly set Alpha interpretation for visual products
+        for h in v_handles.values():
+            h.colorinterp = [ColorInterp.red, ColorInterp.green, ColorInterp.blue, ColorInterp.alpha]
+
+        read_queue: queue.Queue = queue.Queue(maxsize=2)
+        write_queue: queue.Queue = queue.Queue(maxsize=2)
+
+        def reader_thread() -> None:
+            try:
+                if vv_src.height == 0 or vv_src.width == 0:
+                    print("Error: Source file has 0 dimensions.", flush=True)
+                    read_queue.put(None); return
+                    
+                for r in range(0, vv_src.height, c.BLOCK_SIZE):
+                    for col in range(0, vv_src.width, c.BLOCK_SIZE):
+                        window = rio.windows.Window(col, r, min(c.BLOCK_SIZE, vv_src.width - col), min(c.BLOCK_SIZE, vv_src.height - r))
+                        vv_data = vv_src.read(1, window=window)
+                        vh_data = vh_src.read(1, window=window)
+                        # Read geometric alpha from warped Band 2
+                        alpha = vv_src.read(2, window=window).astype(np.uint8)
+                        read_queue.put((window, vv_data, vh_data, alpha), timeout=120)
+                read_queue.put(None, timeout=120)
+            except Exception as e:
+                print(f"\nCRITICAL: S1 Reader thread failed: {e}", flush=True)
+                read_queue.put(None)
+
+        def writer_thread() -> None:
+            try:
+                while True:
+                    item = write_queue.get(timeout=120)
+                    if item is None:
+                        write_queue.task_done(); break
+                    window, res = item
+                    for p, h in v_handles.items():
+                        if f"{p}_VIS" in res: h.write(res[f"{p}_VIS"], window=window)
+                    for p, h in a_handles.items():
+                        if f"{p}_ANA" in res: h.write(res[f"{p}_ANA"], 1, window=window)
+                    write_queue.task_done()
+            except Exception as e:
+                print(f"\nCRITICAL: S1 Writer thread failed: {e}", flush=True)
+
+        t_read = threading.Thread(target=reader_thread, daemon=True)
+        t_write = threading.Thread(target=writer_thread, daemon=True)
+        t_read.start(); t_write.start()
+
+        def db_scale(arr: np.ndarray) -> np.ndarray:
+            m = arr > 0
+            db_vals = np.full_like(arr, db_min, dtype=np.float32)
+            db_vals[m] = 10 * np.log10(arr[m])
+            return np.clip((db_vals - db_min) / db_range * 255, 0, 255).astype(np.uint8)
+
+        try:
+            while True:
+                try:
+                    item = read_queue.get(timeout=120)
+                except queue.Empty:
+                    print("\nCRITICAL: S1 Reader timed out (Deadlock?).", flush=True); break
+                    
+                if item is None:
+                    write_queue.put(None, timeout=120); read_queue.task_done(); break
+
+                try:
+                    window, vv_raw, vh_raw, alpha = item
+                    results = {}
+
+                    # Processing
+                    vv_denoised = denoise.refined_lee_filter(vv_raw, size=5)
+                    vh_denoised = denoise.improved_lee_filter(vh_raw, size=3)
+                    results["VV_ANA"] = vv_denoised; results["VH_ANA"] = vh_denoised
+
+                    s_vv, s_vh = db_scale(vv_denoised), db_scale(vh_denoised)
+                    m_norm = alpha.astype(float) / 255.0
+                    def apply_mask(img): return (img.astype(float) * m_norm).astype(np.uint8)
+
+                    if "VV" in v_handles: results["VV_VIS"] = np.stack([apply_mask(s_vv)]*3 + [alpha], axis=0)
+                    if "VH" in v_handles: results["VH_VIS"] = np.stack([apply_mask(s_vh)]*3 + [alpha], axis=0)
+                    if "RATIO" in v_handles:
+                        ratio_denoised = denoise.gamma_map_filter(vv_raw / (vh_raw + 1e-9), size=5, looks=1)
+                        s_r = np.clip((ratio_denoised - ratio_min) / ratio_range * 255, 0, 255).astype(np.uint8)
+                        results["RATIO_VIS"] = np.stack([apply_mask(s_vv), apply_mask(s_vh), apply_mask(s_r), alpha], axis=0)
+
+                    write_queue.put((window, results), timeout=120)
+                except Exception as e:
+                    print(f"\nCRITICAL: S1 processing loop failed: {e}", flush=True)
+                    break
+                    
+                read_queue.task_done()
+        finally:
+            write_queue.put(None, timeout=5)
+            t_read.join(); t_write.join()
+            vis_output_paths: List[str] = [h.name for h in v_handles.values()]
+            for h in list(v_handles.values()) + list(a_handles.values()): h.close()
+
+        func.perf_logger.end_step()
+
+        if vis_output_paths:
+            # Memory Safety: We use max 2 parallel finalizers if not overriden.
+            # Each finalizer will use GDAL_NUM_THREADS=1 to avoid OOM spikes.
+            max_finalizers = int(os.getenv("MAX_PARALLEL_FINALIZERS", "2"))
+            print(f"Finalizing {len(vis_output_paths)} S1 products (Parallel: {max_finalizers})...", flush=True)
+
+            def finalize_product(path):
+                # Inside parallel task, we force GDAL to single-thread per process
+                # to stay within memory budget
+                os.environ["GDAL_NUM_THREADS"] = "1"
+                cog.convert_to_cog(path)
+                p_type = path.split("/")[-2].upper()
+                meta.generate_sidecar(path, f"S1-{p_type}", f"S1-{p_type}", effective_res=15.0)
+
+            with ThreadPoolExecutor(max_workers=min(len(vis_output_paths), max_finalizers)) as executor:
+                executor.map(finalize_product, vis_output_paths)
+
+        legends.save_all_legends(c.DIRS["S1S2_LEGENDS"])
+        gc.collect()
 
 
-def pipeline(name, uri, processes):
-    """The Sentinel 1 pipeline itself"""
-    prepare(uri)
-    if "VV" in processes:
-        calc_VV(f"{c.DIRS["S1_VV"]}/{name}")
-    if "VH" in processes:
-        calc_VH(f"{c.DIRS["S1_VH"]}/{name}")
+def run_pipeline(ds_obj: gdal.Dataset, processes: List[str], fusion_processes: List[str] = []) -> None:
+    """Entry point for S1 pipeline."""
+    desc = gdal.Info(ds_obj, format="json")["description"]
+    times_match = re.search(r".*S1._.*_.*_.*_(\d+T\d+_\d+T\d+)_.*", desc)
+    if not times_match: return
+    name = f"S1_{times_match.groups()[0]}"
+
+    prepare(ds_obj)
+    v_paths: Dict[str, str] = {}
+    a_paths: Dict[str, str] = {}
+
+    # Fusion dependencies for S1:
+    # All current fusion products (RADAR-BURN, LIFE-MACHINE, TARGET-PROBE-V2) need VH
+    needs_vh_for_fusion = any(p in fusion_processes for p in ["RADAR-BURN", "LIFE-MACHINE", "TARGET-PROBE-V2"])
+
+    if "VV" in processes or "RATIOVVVH" in processes:
+        v_paths["VV"] = f"{c.DIRS['VIS_S1_VV']}/{name}"
+        a_paths["VV"] = f"{c.DIRS['ANA_S1_VV']}/{name}"
+        if "VV" not in processes:
+            del v_paths["VV"]
+
+    if "VH" in processes or "RATIOVVVH" in processes or needs_vh_for_fusion:
+        v_paths["VH"] = f"{c.DIRS['VIS_S1_VH']}/{name}"
+        a_paths["VH"] = f"{c.DIRS['ANA_S1_VH']}/{name}"
+        if "VH" not in processes:
+            del v_paths["VH"]
+
     if "RATIOVVVH" in processes:
-        calc_ratiovvvh(f"{c.DIRS["S1_RATIOVVVH"]}/{name}")
-    if "RATIOVHVV" in processes:
-        calc_ratiovhvv(f"{c.DIRS["S1_RATIOVHVV"]}/{name}")
-    if "PRODUCT" in processes:
-        calc_product(f"{c.DIRS["S1_PRODUCTVVVH"]}/{name}")
-    if "DIFFERENCE" in processes:
-        calc_difference(f"{c.DIRS["S1_DIFFVVVH"]}/{name}")
+        v_paths["RATIO"] = f"{c.DIRS['VIS_S1_RATIO']}/{name}"
+    _render_internal(v_paths, a_paths)
     cleanup()
-
-
-def runPipeline(ds, processes):
-    """Runs the Sentinel 1 pipeline"""
-    desc = gdal.Info(ds, format="json")["description"]
-    productUri = f"{c.DIRS["DL"]}/{get_uri(desc)}"
-    times = get_data(desc)
-    name = f"S1_{times}"
-
-    pipeline(name, productUri, processes)

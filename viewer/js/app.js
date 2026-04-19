@@ -1,0 +1,557 @@
+/**
+ * Satelliittikuvat Web Viewer (OpenLayers Edition)
+ * High-performance native COG rendering with hardware acceleration.
+ */
+
+// --- CONFIGURATION ---
+const IMAGE_BASE_URL = "imagery/"; 
+const INVENTORY_URL = IMAGE_BASE_URL + "visual/inventory.json";
+const LEGENDS_URL = IMAGE_BASE_URL + "legends/legends.json";
+
+// --- UI DICTIONARY ---
+const TRANSLATIONS = {
+    "S1": { title: "SAR tutka", subtitle: "(ESA Sentinel 1)" },
+    "S2": { title: "Optinen", subtitle: "(ESA Sentinel 2)" },
+    "FUSED": { title: "Sensorifuusio", subtitle: "(S1 + S2 yhdistelmäkuvat)" },
+    "VV": { title: "VV-polarisaatio", subtitle: "(Pystysuora lähetys ja vastaanotto)" },
+    "VH": { title: "VH-polarisaatio", subtitle: "(Pysty-vaaka ristiinpolarisaatio)" },
+    "RATIO": { title: "VV/VH-suhde", subtitle: "" },
+    "AP": { title: "Ilmakehän läpäisy", subtitle: "(SWIR-väriyhdistelmä)" },
+    "NDBI": { title: "NDBI-indeksi", subtitle: "(Rakennetun ympäristön indeksi)" },
+    "NDBI_CLEAN": { title: "NDBI_CLEAN", subtitle: "(Häiriösuodatettu rakennetun ympäristön indeksi)" },
+    "NDRE": { title: "NDRE-indeksi", subtitle: "(Kasvillisuuden punaisen reunan indeksi)" },
+    "NDVI": { title: "NDVI-indeksi", subtitle: "(Normalisoitu kasvillisuusindeksi)" },
+    "NIRFC": { title: "NIR-värivääräkuva", subtitle: "(Lähi-infrapunakooste)" },
+    "TCI": { title: "TCI-kuva", subtitle: "(Luonnollisen värin kuva / Tosivärikuva)" },
+    "NBR": { title: "NBR-indeksi", subtitle: "(Normalisoitu paloindeksi tai Paloalueindeksi)" },
+    "LIFE-MACHINE": { title: "LIFE-MACHINE", subtitle: "(Biomassan ja keinotekoisten rakenteiden erottelu)" },
+    "RADAR-BURN": { title: "RADAR-BURN", subtitle: "(Tutkaheijastumat optisen kuvan päällä)" },
+    "TARGET-PROBE-V2": { title: "TARGET-PROBE-V2", subtitle: "(Kehittynyt kohde- ja rakennustunnistus)" }
+};
+
+const S2_PRIORITY = ["TCI", "NIRFC", "AP", "NDBI_CLEAN", "NDBI", "NDRE", "NDVI", "NBR", "CAMO"];
+
+// --- HELPERS ---
+function formatSize(bytes) {
+    if (!bytes || bytes === 0) return "0 t";
+    const k = 1024;
+    const sizes = ['t', 'kt', 'Mt', 'Gt', 'Tt'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + sizes[i];
+}
+
+function downloadFile(url, filename) {
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+// --- GLOBAL STATE ---
+let map;
+let activeLayers = {}; // path -> {layer, meta}
+let hoverSource;
+let masterLegends = {}; 
+let sentinelAttribution = new ol.source.Vector({
+    attributions: '' // Starts empty
+});
+
+const baseLayers = {
+    'dark': new ol.layer.Tile({
+        source: new ol.source.XYZ({
+            url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+            attributions: 'Tiles &copy; Esri',
+            maxZoom: 16
+        }),
+        visible: true
+    }),
+    'osm': new ol.layer.Tile({
+        source: new ol.source.OSM(),
+        visible: false
+    })
+};
+
+// --- INITIALIZATION ---
+document.addEventListener('DOMContentLoaded', () => {
+    initMap();
+    initBasePicker();
+    loadInventory();
+    loadLegends();
+    checkLogo();
+
+    // Deselect all button
+    const deselectBtn = document.getElementById('deselect-all');
+    if (deselectBtn) {
+        deselectBtn.onclick = deselectAllLayers;
+    }
+});
+
+function deselectAllLayers() {
+    const checkboxes = document.querySelectorAll('#layer-picker input[type="checkbox"]');
+    checkboxes.forEach(chk => {
+        if (chk.checked) {
+            chk.checked = false;
+            // Trigger the change manually to run toggleLayer
+            const event = new Event('change');
+            chk.dispatchEvent(event);
+        }
+    });
+}
+
+function updateGroupMarkers() {
+    // Update Product Groups (e.g. TCI, NDVI)
+    const prodGroups = document.querySelectorAll('.prod-group');
+    prodGroups.forEach(group => {
+        const hasActive = group.querySelectorAll('input:checked').length > 0;
+        if (hasActive) {
+            group.classList.add('has-active');
+        } else {
+            group.classList.remove('has-active');
+        }
+    });
+
+    // Update Main Categories (e.g. S1, S2, FUSED)
+    const satGroups = document.querySelectorAll('.sat-group');
+    satGroups.forEach(group => {
+        const hasActive = group.querySelectorAll('input:checked').length > 0;
+        if (hasActive) {
+            group.classList.add('has-active');
+        } else {
+            group.classList.remove('has-active');
+        }
+    });
+}
+
+function initMap() {
+    // OpenLayers Map initialization
+    map = new ol.Map({
+        target: 'map',
+        controls: ol.control.defaults.defaults().extend([
+            new ol.control.Attribution({
+                collapsible: false
+            })
+        ]),
+        layers: [
+            baseLayers.dark,
+            baseLayers.osm
+        ],
+        view: new ol.View({
+            center: ol.proj.fromLonLat([24.9384, 60.1699]),
+            zoom: 8
+        })
+    });
+
+    // Dummy layer to hold the dynamic Sentinel attribution
+    const attrLayer = new ol.layer.Vector({
+        source: sentinelAttribution
+    });
+    map.addLayer(attrLayer);
+
+    // Scale Line
+    map.addControl(new ol.control.ScaleLine({ units: 'metric' }));
+
+    // Hover Preview Source & Layer
+    hoverSource = new ol.source.Vector();
+    const hoverLayer = new ol.layer.Vector({
+        source: hoverSource,
+        style: new ol.style.Style({
+            stroke: new ol.style.Stroke({ color: '#00bcd4', width: 3 }),
+            fill: new ol.style.Fill({ color: 'rgba(0, 188, 212, 0.1)' })
+        })
+    });
+    map.addLayer(hoverLayer);
+}
+
+function initBasePicker() {
+    const container = document.getElementById('base-picker');
+    const options = [
+        { id: 'dark', label: 'Tumma' },
+        { id: 'osm', label: 'Kartta' }
+    ];
+
+    options.forEach(opt => {
+        const btn = document.createElement('button');
+        btn.className = 'base-btn' + (opt.id === 'dark' ? ' active' : '');
+        btn.innerText = opt.label;
+        btn.onclick = () => {
+            Object.keys(baseLayers).forEach(key => {
+                baseLayers[key].setVisible(key === opt.id);
+            });
+            container.querySelectorAll('.base-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+        };
+        container.appendChild(btn);
+    });
+}
+
+async function checkLogo() {
+    try {
+        const resp = await fetch('logo.png', { method: 'HEAD' });
+        if (resp.ok) document.getElementById('logo-container').style.display = 'block';
+    } catch (e) {}
+}
+
+async function loadLegends() {
+    try {
+        const url = window.location.origin + window.location.pathname.replace('index.html', '') + LEGENDS_URL;
+        const response = await fetch(url);
+        if (response.ok) masterLegends = await response.json();
+    } catch (e) {}
+}
+
+async function loadInventory() {
+    const picker = document.getElementById('layer-picker');
+    const progressBar = document.getElementById('progress-bar');
+    const loadingText = document.getElementById('loading-text');
+
+    try {
+        const response = await fetch(INVENTORY_URL);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+
+        const contentLength = response.headers.get('content-length');
+        const total = parseInt(contentLength, 10);
+        let loaded = 0;
+
+        const reader = response.body.getReader();
+        const chunks = [];
+        
+        while(true) {
+            const {done, value} = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            loaded += value.length;
+            if (total) {
+                const percent = Math.round((loaded / total) * 50); // First 50% for download
+                progressBar.style.width = `${percent}%`;
+                loadingText.innerText = `Haetaan... ${Math.round((loaded / 1024 / 1024))} Mt`;
+            }
+        }
+
+        loadingText.innerText = "Käsitellään tietoja...";
+        const allChunks = new Uint8Array(loaded);
+        let position = 0;
+        for (const chunk of chunks) {
+            allChunks.set(chunk, position);
+            position += chunk.length;
+        }
+
+        const decoder = new TextDecoder("utf-8");
+        const jsonString = decoder.decode(allChunks);
+        const data = JSON.parse(jsonString);
+
+        if (data.layers && data.layers.length > 0) {
+            renderLayerPicker(data.layers);
+        } else {
+            picker.innerHTML = `<div id="loading">Ei kuvia saatavilla.</div>`;
+        }
+    } catch (e) {
+        console.error("Inventory error:", e);
+        picker.innerHTML = `<div id="loading">Virhe ladattaessa inventaariota: ${e.message}</div>`;
+    }
+}
+
+function getGridSquare(layer) {
+    if (!layer.product.startsWith("S2")) return "";
+    const parts = layer.path.split('/');
+    const filename = parts[parts.length - 1];
+    return filename.startsWith('T') ? filename.split('-')[0] : "";
+}
+
+function renderLayerPicker(layers) {
+    const picker = document.getElementById('layer-picker');
+    const progressBar = document.getElementById('progress-bar');
+    const loadingText = document.getElementById('loading-text');
+    picker.innerHTML = ''; 
+
+    const groups = {};
+    layers.forEach(layer => {
+        const sat = layer.product.split('-')[0];
+        const type = layer.product.split('-').slice(1).join('-');
+        if (!groups[sat]) groups[sat] = {};
+        if (!groups[sat][type]) groups[sat][type] = [];
+        groups[sat][type].push(layer);
+    });
+
+    const satOrder = ['S2', 'S1', 'FUSED'];
+    let totalLayers = layers.length;
+    let renderedLayers = 0;
+
+    satOrder.forEach(sat => {
+        if (!groups[sat]) return;
+        const satMeta = TRANSLATIONS[sat] || { title: sat, subtitle: "" };
+        const satDiv = document.createElement('div');
+        satDiv.className = 'sat-group collapsed';
+        satDiv.id = `group-${sat}`;
+        satDiv.innerHTML = `
+            <div class="sat-title" onclick="this.parentElement.classList.toggle('collapsed')">
+                <span>${satMeta.title} <small style="text-transform: none; font-weight: normal; opacity: 0.7;">${satMeta.subtitle}</small></span>
+            </div>
+            <div class="prod-container"></div>
+        `;
+        const prodContainer = satDiv.querySelector('.prod-container');
+
+        const types = Object.keys(groups[sat]).sort((a, b) => {
+            if (sat === 'S2') return S2_PRIORITY.indexOf(a) - S2_PRIORITY.indexOf(b);
+            return a.localeCompare(b);
+        });
+
+        types.forEach(type => {
+            const typeMeta = TRANSLATIONS[type] || { title: type, subtitle: "" };
+            const typeDiv = document.createElement('div');
+            typeDiv.className = 'prod-group collapsed';
+            typeDiv.id = `prod-${sat}-${type}`;
+            typeDiv.innerHTML = `
+                <div class="prod-title" onclick="this.parentElement.classList.toggle('collapsed')">
+                    ${typeMeta.title}
+                    <span class="subtitle">${typeMeta.subtitle}</span>
+                </div>
+                <div class="layer-container"></div>
+            `;
+            const layerContainer = typeDiv.querySelector('.layer-container');
+
+            const sortedLayers = groups[sat][type].sort((a, b) => {
+                if (sat === "S2") {
+                    const gridA = getGridSquare(a), gridB = getGridSquare(b);
+                    if (gridA !== gridB) return gridA.localeCompare(gridB);
+                }
+                return b.acquisition_time.localeCompare(a.acquisition_time);
+            });
+
+            sortedLayers.forEach(layer => {
+                layerContainer.appendChild(createLayerItem(layer));
+                renderedLayers++;
+                // 50% to 100% for rendering
+                const percent = 50 + Math.round((renderedLayers / totalLayers) * 50);
+                progressBar.style.width = `${percent}%`;
+            });
+            prodContainer.appendChild(typeDiv);
+        });
+        picker.appendChild(satDiv);
+    });
+}
+
+function createLayerItem(layer) {
+    const div = document.createElement('div');
+    div.className = 'layer-item';
+    const grid = getGridSquare(layer);
+    const date = new Date(layer.acquisition_time);
+    const friendlyTime = date.toLocaleString('en-GB', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + "Z";
+    const sizeStr = formatSize(layer.file_size_bytes);
+
+    div.innerHTML = `
+        <input type="checkbox" id="chk-${layer.path}">
+        <div class="layer-info">
+            <span class="layer-time">${grid ? grid + ", " : ""}${friendlyTime}</span>
+            <span class="layer-status">${layer.acquisition_time.split('T')[0]}</span>
+        </div>
+        <div class="layer-actions">
+            <button class="dl-btn" title="Lataa täysi TIF">
+                <svg viewBox="0 0 24 24" width="16" height="16">
+                    <path fill="currentColor" d="M12 16l-5-5h3V4h4v7h3l-5 5zm9 2v2H3v-2h18z"/>
+                </svg>
+            </button>
+            <span class="file-size">${sizeStr}</span>
+        </div>
+    `;
+
+    div.onclick = (e) => {
+        if (e.target.closest('.dl-btn')) {
+            e.stopPropagation();
+            const baseUrl = window.location.href.split('index.html')[0].split('?')[0];
+            const url = baseUrl + IMAGE_BASE_URL + layer.path;
+            const filename = layer.path.split('/').pop();
+            downloadFile(url, filename);
+            return;
+        }
+        
+        if (e.target.tagName !== 'INPUT') {
+            const chk = div.querySelector('input');
+            chk.checked = !chk.checked;
+            toggleLayer(layer, chk.checked, div);
+        }
+    };
+    div.querySelector('input').onchange = (e) => toggleLayer(layer, e.target.checked, div);
+
+    div.onmouseenter = () => {
+        if (div.querySelector('input').checked) return;
+        
+        if (layer.footprint) {
+            // Use precise footprint if available
+            const format = new ol.format.GeoJSON();
+            const feature = format.readFeature(layer.footprint, {
+                dataProjection: 'EPSG:4326',
+                featureProjection: 'EPSG:3857'
+            });
+            hoverSource.addFeature(feature);
+        } else {
+            // Fallback to bounds
+            const b = layer.bounds; // [[lat, lon], [lat, lon]]
+            const poly = new ol.geom.Polygon([[
+                ol.proj.fromLonLat([b[0][1], b[0][0]]),
+                ol.proj.fromLonLat([b[1][1], b[0][0]]),
+                ol.proj.fromLonLat([b[1][1], b[1][0]]),
+                ol.proj.fromLonLat([b[0][1], b[1][0]]),
+                ol.proj.fromLonLat([b[0][1], b[0][0]])
+            ]]);
+            hoverSource.addFeature(new ol.Feature(poly));
+        }
+    };
+    div.onmouseleave = () => hoverSource.clear();
+
+    return div;
+}
+
+function updateAttributions() {
+    const years = new Set();
+    Object.values(activeLayers).forEach(obj => {
+        if (obj.layer.getVisible()) {
+            const year = obj.meta.acquisition_time.split('-')[0];
+            years.add(year);
+        }
+    });
+
+    if (years.size === 0) {
+        sentinelAttribution.setAttributions([]);
+        return;
+    }
+
+    let attr = "Made with Copernicus Sentinel Data";
+    const sortedYears = Array.from(years).sort();
+    const yearStr = sortedYears.length > 1 
+        ? `${sortedYears[0]}-${sortedYears[sortedYears.length - 1]}` 
+        : sortedYears[0];
+    attr += ` ${yearStr}`;
+    
+    sentinelAttribution.setAttributions([attr]);
+}
+
+function updateLegends() {
+    updateAttributions();
+    const panel = document.getElementById('legend-panel');
+    panel.innerHTML = '';
+    const activeLegendIds = new Set();
+    Object.values(activeLayers).forEach(obj => {
+        // Only show legends for layers that are actually visible
+        if (obj.layer.getVisible() && obj.meta.legend_id) {
+            activeLegendIds.add(obj.meta.legend_id);
+        }
+    });
+    
+    activeLegendIds.forEach(id => {
+        if (masterLegends[id]) {
+            // Find one of the active layers with this legend_id to get resolution
+            const sample = Object.values(activeLayers).find(o => o.meta.legend_id === id);
+            const res = sample ? sample.meta.resolution : null;
+
+            const div = document.createElement('div');
+            div.style.pointerEvents = 'auto';
+            div.style.cursor = 'pointer';
+            
+            let html = masterLegends[id];
+            if (res) {
+                const resHtml = `<div class="legend-res">Res: ${res}m/px</div>`;
+                html = html.replace('</div>', resHtml + '</div>');
+            }
+            
+            div.innerHTML = html;
+            div.onclick = () => {
+                const parts = id.split('-');
+                const sat = parts[0];
+                const group = document.getElementById(`group-${sat}`);
+                const prod = document.getElementById(`prod-${sat}-${parts.slice(1).join('-')}`);
+                if (group) group.classList.remove('collapsed');
+                if (prod) prod.classList.remove('collapsed');
+                prod.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            };
+            panel.appendChild(div);
+        }
+    });
+}
+
+// --- LAYER MANAGEMENT ---
+async function toggleLayer(layerMeta, isVisible, element) {
+    const path = layerMeta.path;
+    const spinner = document.getElementById('map-spinner');
+
+    if (isVisible) {
+        // AUTO-ZOOM LOGIC: 
+        // Only if no layers are currently visible AND new layer is outside current view
+        const anyVisible = Object.values(activeLayers).some(obj => obj.layer.getVisible());
+        if (!anyVisible) {
+            const b = layerMeta.bounds;
+            const layerExtent = ol.extent.boundingExtent([
+                ol.proj.fromLonLat([b[0][1], b[0][0]]),
+                ol.proj.fromLonLat([b[1][1], b[1][0]])
+            ]);
+            const viewExtent = map.getView().calculateExtent(map.getSize());
+            if (!ol.extent.intersects(layerExtent, viewExtent)) {
+                map.getView().fit(layerExtent, { padding: [50, 50, 50, 50], duration: 1000 });
+            }
+        }
+
+        // If layer already exists, just make it visible
+        if (activeLayers[path]) {
+            activeLayers[path].layer.setVisible(true);
+            element.classList.add('active');
+            updateLegends();
+            updateGroupMarkers();
+            return;
+        }
+
+        element.classList.add('active', 'loading');
+        spinner.style.display = 'block';
+        
+        try {
+            // Safer URL construction
+            const baseUrl = window.location.href.split('index.html')[0].split('?')[0];
+            const url = baseUrl + IMAGE_BASE_URL + path;
+            
+            console.log("Loading COG:", url);
+
+            // OPENLAYERS NATIVE COG SOURCE
+            const source = new ol.source.GeoTIFF({
+                sources: [{ url: url }],
+                // OpenLayers WebGLTile often prefers to handle nodata internally 
+                // but we can help it if needed.
+                normalize: true,
+                transition: 0 // Disable fade-in effect
+            });
+
+            const leafletLayer = new ol.layer.WebGLTile({
+                source: source,
+                opacity: 1,
+                visible: true
+            });
+
+            // Set Z-index based on acquisition time
+            const timestamp = new Date(layerMeta.acquisition_time).getTime();
+            leafletLayer.setZIndex(Math.floor(timestamp / 100000));
+
+            activeLayers[path] = { layer: leafletLayer, meta: layerMeta };
+            map.addLayer(leafletLayer);
+            updateLegends();
+            updateGroupMarkers();
+
+            // Spinner off once it starts loading tiles
+            element.classList.remove('loading');
+            spinner.style.display = 'none';
+
+        } catch (err) {
+            console.error("OL Load Error:", err);
+            element.classList.remove('active', 'loading');
+            element.querySelector('input').checked = false;
+            updateGroupMarkers();
+            spinner.style.display = 'none';
+        }
+    } else {
+        element.classList.remove('active', 'loading');
+        if (activeLayers[path]) {
+            // Just hide it, don't remove it from the map or state
+            activeLayers[path].layer.setVisible(false);
+            updateLegends();
+            updateGroupMarkers();
+        }
+    }
+}

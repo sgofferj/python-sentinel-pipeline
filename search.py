@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# search.py from https://github.com/sgofferj/python-sentinel-pipeline/copernicus
+# search.py from https://github.com/sgofferj/python-sentinel-pipeline
 #
 # Copyright Stefan Gofferje
 #
@@ -8,171 +8,162 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at https://www.gnu.org/licenses/gpl-3.0.en.html
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either expressed or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
 
+"""
+Satellite product search and logging module.
+Handles OData queries for Sentinel-1 and Sentinel-2 and maintains local search logs.
+"""
+
+import json
+import os
+from typing import Any, Dict, List, Tuple, Optional
+
+import constants as c
 import copernicus as cop
 import functions as func
-import constants as c
-from dotenv import load_dotenv
-import os
-import json
 
-load_dotenv()
+# Connect to Copernicus CDSE
+USERNAME: str = os.getenv("COPERNICUS_USERNAME", "")
+PASSWORD: str = os.getenv("COPERNICUS_PASSWORD", "")
+mycop: Any = cop.connect(USERNAME, PASSWORD)
 
-S1_BOX = os.getenv("S1_BOX")
-S2_BOX = os.getenv("S2_BOX")
-
-USERNAME = os.getenv("COPERNICUS_USERNAME")
-PASSWORD = os.getenv("COPERNICUS_PASSWORD")
-mycop = cop.connect(USERNAME, PASSWORD)
+USE_LOG: bool = os.getenv("USE_LOG", "true").lower() == "true"
 
 
-USE_LOG = func.strtobool(os.getenv("USE_LOG", default=True))
-
-S1_STARTDATE = os.getenv("S1_STARTDATE", default=func.yesterday())
-S1_MAXRECORDS = os.getenv("S1_MAXRECORDS", default=1)
-S1_SORTPARAM = os.getenv("S1_SORTPARAM", default="startDate")
-S1_SORTORDER = os.getenv("S1_SORTORDER", default="descending")
-S1_PRODUCTTYPE = os.getenv("S1_PRODUCTTYPE", default="GRD")
-S1_CLIP = os.getenv("S1_CLIP", default=True)
-
-
-S2_CLOUDCOVER = os.getenv("S2_CLOUDCOVER", default=5)
-S2_STARTDATE = os.getenv("S2_STARTDATE", default=func.yesterday())
-S2_MAXRECORDS = os.getenv("S2_MAXRECORDS", default=5)
-S2_SORTPARAM = os.getenv("S2_SORTPARAM", default="startDate")
-S2_SORTORDER = os.getenv("S2_SORTORDER", default="descending")
-S2_PRODUCTTYPE = os.getenv("S2_PRODUCTTYPE", default="L2A")
-S2_CLIP = os.getenv("S2_CLIP", default=True)
+def load_log(sat: str) -> Optional[Dict[str, Any]]:
+    """Loads the last search log for a satellite."""
+    log_path: str = os.path.join(c.DIRS["DL"], f"{sat}_last.json")
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return None
+    return None
 
 
-def readlog(sat):
+def update_last_run(sat: str, processed_files: List[Dict[str, Any]]) -> None:
+    """
+    Updates the JSON log by APPENDING newly processed files to the existing list.
+    Ensures that files are only added to the 'already handled' list after successful processing.
+    """
+    if not USE_LOG:
+        return
+        
+    existing_log = load_log(sat) or {"time": "", "files": []}
+    existing_files = existing_log.get("files", [])
+    existing_ids = {f["id"] for f in existing_files if "id" in f}
+    
+    # Only add truly new files to the log
+    new_entries = []
+    for f in processed_files:
+        if f.get("id") not in existing_ids:
+            new_entries.append(f)
+            
+    combined_files = existing_files + new_entries
+    
+    log_data: Dict[str, Any] = {
+        "time": func.this_moment(),
+        "files": combined_files,
+    }
+    
+    log_path: str = os.path.join(c.DIRS["DL"], f"{sat}_last.json")
+    with open(log_path, "w", encoding="utf-8") as f:
+        json.dump(log_data, f, indent=4)
+        
+    print(f"Updated {sat} log: added {len(new_entries)} new files (Total handled: {len(combined_files)}).", flush=True)
+
+
+def search_s1(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
+    """Searches for Sentinel-1 products. Returns (num_files, results_per_box)."""
+    num_files: int = 0
+    search_result: Dict[str, List[Dict[str, Any]]] = {}
+
+    product_type: str = os.getenv("S1_PRODUCTTYPE", "GRD")
+    sensor_mode: str = os.getenv("S1_SENSORMODE", "IW")
+    max_records: int = int(os.getenv("S1_MAXRECORDS", "5"))
+    sort_param: str = os.getenv("S1_SORTPARAM", "startDate")
+    sort_order: str = os.getenv("S1_SORTORDER", "descending")
+
+    # Start date logic: fallback to yesterday, but honor search log if USE_LOG is true
+    start_date: str = os.getenv("S1_STARTDATE", func.yesterday())
+    last_ids: List[str] = []
+
     if USE_LOG:
-        logfile = f"{c.DIRS["DL"]}/{sat}_last.json"
-        if os.path.exists(logfile):
-            with open(logfile) as f:
-                d = json.load(f)
-                f.close()
-            return d
-        else:
-            return False
-    else:
-        return False
+        log = load_log("s1")
+        if log:
+            if not os.getenv("S1_STARTDATE"):
+                start_date = log.get("time", start_date)
+            last_ids = [f["id"] for f in log.get("files", []) if "id" in f]
 
-
-def writelog(sat, data):
-    if USE_LOG:
-        logfile = f"{c.DIRS["DL"]}/{sat}_last.json"
-        data = {"time": func.this_moment(), "files": data}
-        d = json.dumps(data, indent=4)
-        with open(logfile, "w") as f:
-            f.write(d)
-            f.close()
-
-
-def search_s1(boxes):
-    result = {}
-    files = 0
-    log = []
-
-    lastlog = readlog("s1")
-    if lastlog != False:
-        startdate = lastlog["time"]
-    else:
-        startdate = S1_STARTDATE
+    print(f"Searching S1 ({product_type}/{sensor_mode}) from {start_date}...", flush=True)
 
     for box in boxes:
-        print(f"Searching for products in box {box}...")
-        status, searchResult = mycop.productSearch(
+        status, result = mycop.productSearch(
             "Sentinel1",
+            productType=product_type,
+            sensorMode=sensor_mode,
+            startDate=start_date,
             box=box,
-            startDate=startdate,
-            maxRecords=S1_MAXRECORDS,
-            sortParam=S1_SORTPARAM,
-            sortOrder=S1_SORTORDER,
-            productType=S1_PRODUCTTYPE,
+            maxRecords=max_records,
+            sortParam=sort_param,
+            sortOrder=sort_order,
         )
+        if status == 200:
+            box_files: List[Dict[str, Any]] = []
+            for feat in result["features"]:
+                if file_id := feat.get("id"):
+                    if USE_LOG and file_id in last_ids:
+                        continue
+                    box_files.append(feat)
+                    num_files += 1
+            search_result[box] = box_files
 
-        filelist = []
-        for feature in searchResult["features"]:
-            fileID = feature["id"]
-            fileName = feature["properties"]["title"]
-            print(f"{fileName}")
-            if lastlog != False:
-                if fileID in lastlog["files"]:
-                    print("File found in log - not using it.")
-                else:
-                    filelist.append({fileID: fileName})
-                    log.append(fileID)
-                    files += 1
-            else:
-                filelist.append({fileID: fileName})
-                log.append(fileID)
-                files += 1
-        result.update({box: filelist})
-        print(f'Found {len(searchResult["features"])} products since {startdate}.')
-        print()
-    writelog("s1", log)
-    return files, result
+    return num_files, search_result
 
 
-def search_s2(boxes):
-    result = {}
-    files = 0
-    log = []
+def search_s2(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
+    """Searches for Sentinel-2 products. Returns (num_files, results_per_box)."""
+    num_files: int = 0
+    search_result: Dict[str, List[Dict[str, Any]]] = {}
 
-    lastlog = readlog("s2")
-    if lastlog != False:
-        startdate = lastlog["time"]
-    else:
-        startdate = S2_STARTDATE
+    product_type: str = os.getenv("S2_PRODUCTTYPE", "S2MSI2A")
+    cloud_cover: int = int(os.getenv("S2_CLOUDCOVER", "5"))
+    max_records: int = int(os.getenv("S2_MAXRECORDS", "5"))
+    sort_param: str = os.getenv("S2_SORTPARAM", "startDate")
+    sort_order: str = os.getenv("S2_SORTORDER", "descending")
+
+    start_date: str = os.getenv("S2_STARTDATE", func.yesterday())
+    last_ids: List[str] = []
+
+    if USE_LOG:
+        log = load_log("s2")
+        if log:
+            if not os.getenv("S2_STARTDATE"):
+                start_date = log.get("time", start_date)
+            last_ids = [f["id"] for f in log.get("files", []) if "id" in f]
+
+    print(f"Searching S2 ({product_type}, Cloud < {cloud_cover}%) from {start_date}...", flush=True)
 
     for box in boxes:
-        print(f"Searching for products in box {box}...")
-        status, searchResult = mycop.productSearch(
+        status, result = mycop.productSearch(
             "Sentinel2",
-            cloudCover=S2_CLOUDCOVER,
+            productType=product_type,
+            startDate=start_date,
             box=box,
-            startDate=startdate,
-            maxRecords=S2_MAXRECORDS,
-            sortParam=S2_SORTPARAM,
-            sortOrder=S2_SORTORDER,
-            productType=S2_PRODUCTTYPE,
+            cloudCover=cloud_cover,
+            maxRecords=max_records,
+            sortParam=sort_param,
+            sortOrder=sort_order,
         )
+        if status == 200:
+            box_files: List[Dict[str, Any]] = []
+            for feat in result["features"]:
+                if file_id := feat.get("id"):
+                    if USE_LOG and file_id in last_ids:
+                        continue
+                    box_files.append(feat)
+                    num_files += 1
+            search_result[box] = box_files
 
-        filelist = []
-        for feature in searchResult["features"]:
-            fileID = feature["id"]
-            fileName = feature["properties"]["title"]
-            print(f"{fileName}, {feature["properties"]["cloudCover"]}% cloud cover")
-            if lastlog != False:
-                if fileID in lastlog["files"]:
-                    print("File found in log - not using it.")
-                else:
-                    filelist.append({fileID: fileName})
-                    log.append(fileID)
-                    files += 1
-            else:
-                filelist.append({fileID: fileName})
-                log.append(fileID)
-                files += 1
-        result.update({box: filelist})
-        print(f'Found {len(searchResult["features"])} products since {startdate}.')
-        print()
-    writelog("s2", log)
-    return files, result
-
-
-if __name__ == "__main__":
-    print("----- Search-pipeline only -----")
-    boxes = func.getBoxes(S1_BOX)
-    print("Sentinel 1")
-    search_s1(boxes)
-    boxes = func.getBoxes(S2_BOX)
-    print("Sentinel 2")
-    search_s2(boxes)
+    return num_files, search_result
