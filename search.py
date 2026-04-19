@@ -119,6 +119,7 @@ def search_s1(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
                     num_files += 1
             search_result[box] = box_files
 
+    print(f"Search complete. Found {num_files} new products across {len(boxes)} areas.", flush=True)
     return num_files, search_result
 
 
@@ -166,4 +167,5 @@ def search_s2(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
                     num_files += 1
             search_result[box] = box_files
 
+    print(f"S2 search complete. Found {num_files} new products across {len(boxes)} areas.", flush=True)
     return num_files, search_result
