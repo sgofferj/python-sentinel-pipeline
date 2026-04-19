@@ -28,6 +28,7 @@ The goal is to produce physically consistent, high-contrast imagery optimized fo
 
 ### OSINT & Specialty Products
 
+- **RADAR-BURN:** Overlays S1-VH radar detections (metallic/dense signatures) onto S2-TCI imagery using a high-contrast ghost blend. Ideal for spotting vessels or infrastructure hidden in optical noise.
 - **NDBI_CLEAN:** A vegetation-decoupled building index designed to spot infrastructure in dense environments.
 - **CAMO:** Discovery composite for spotting anomalies in rural/forested terrain.
 - **TARGET-PROBE-V2:** Advanced sensor fusion gating building signatures with radar returns.
@@ -82,7 +83,7 @@ Settings are handled via a `.env` file.
 | Variable | Description | Default |
 | :--- | :--- | :--- |
 | `S2_BOX` | Search area coordinates: `East,South,West,North` | - |
-| `S2_STARTDATE` | Earliest sensing date (YYYY-MM-DD) | Yesterday |
+| `S2_STARTDATE` | Earliest sensing date (YYYY-MM-DD). If omitted, resumes from the last run date in `s2_last.json`. | Yesterday |
 | `S2_MAXRECORDS` | Maximum number of products to download per box | `5` |
 | `S2_CLOUDCOVER` | Maximum allowed cloud coverage percentage (0-100) | `5` |
 | `S2_PRODUCTTYPE` | `L2A` (Bottom of Atmosphere) is recommended | `L2A` |
