@@ -213,13 +213,14 @@ if __name__ == "__main__":
 
     # 4. Finalization (Fusion & Inventory)
     should_finalize = (processed_s1 or processed_s2)
+    fusion_count = 0
     if args.downloaded and (s1_ready or s2_ready):
         should_finalize = True
 
     if should_finalize:
         if "FUSION" in PIPELINES_LIST:
             print("\nChecking for S1/S2 overlaps for fusion...", flush=True)
-            run_correlation(FUSION_PROCESSES)
+            fusion_count = run_correlation(FUSION_PROCESSES)
         
         inventory_manager.rebuild_inventory()
     else:
@@ -237,7 +238,10 @@ if __name__ == "__main__":
     seconds = int(total_duration % 60)
     
     msg = f"Pipeline run complete in {minutes}m {seconds}s.\n"
-    msg += f"Processed: {len(processed_s1)} S1, {len(processed_s2)} S2 products."
+    msg += f"Processed: {len(processed_s1)} S1, {len(processed_s2)} S2"
+    if fusion_count > 0:
+        msg += f", {fusion_count} Fusion"
+    msg += " products."
     
     if should_finalize:
         msg += "\nInventory updated."
