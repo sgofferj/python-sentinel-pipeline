@@ -46,7 +46,6 @@ Settings are handled via a `.env` file.
 | `COPERNICUS_PASSWORD` | Your CDSE account password |
 
 ### Core Control
-
 | Variable | Description | Default |
 | :--- | :--- | :--- |
 | `PIPELINES` | `S1,S2,FUSION` (comma-separated list) | `S1,S2` |
@@ -54,8 +53,10 @@ Settings are handled via a `.env` file.
 | `TARGET_DIR` | Root directory for the `output/` folder | `.` |
 | `CLEANUP_AFTER_RUN` | Automatically delete raw data after successful processing | `False` |
 | `CLEANUP_DAYS` | Number of days to keep raw data | `30` |
+| `APPRISE_URLS` | Optional [Apprise](https://github.com/caronc/apprise) URIs for alerts | - |
 
 ### Performance & Hardware
+
 
 | Variable | Description | Default |
 | :--- | :--- | :--- |
