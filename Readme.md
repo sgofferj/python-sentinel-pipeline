@@ -1,103 +1,131 @@
 # python-sentinel-pipeline
 
-(C) 2025 Stefan Gofferje
+(C) 2025-2026 Stefan Gofferje
 
 Licensed under the GNU General Public License V3 or later.
 
-> [!CAUTION]
-> This project is under heavy development and currently not ready to be used without Python knowledge.
-> I will make this a docker container at a later point but for the moment the project should be
-> considered more like a tech preview than a ready product.
+This is an automated pipeline designed to grab and process Sentinel-1 (Radar) and Sentinel-2 (Optical) imagery from the [ESA Copernicus Dataspace Ecosystem (CDSE)](https://dataspace.copernicus.eu/).
+
+The goal is to produce physically consistent, high-contrast imagery optimized for OSINT, change detection, and cross-sensor fusion without having to manually fiddle with SNAP or heavy GIS suites every time a new tile drops.
 
 > [!WARNING]
-> Sentinel 2 datafiles are BIG. For Sentinel 2 processing you will need at least 16GB of RAM. Also make sure,
-> you have ample disk space!
+> Sentinel-2 data is heavy. You need at least 16GB of RAM and ideally an SSD for the `temp/` directory.
 
-## Description
+## What it does
 
-This project is a fully automatic pipeline to download a set of satellite images from
-the [ESA Copernicus Dataspace Ecosystem (CDSE)](https://dataspace.copernicus.eu/) and do the post processing.
+### Dual-Purpose Output
 
-## Features
+- **Visual (RGBA):** 8-bit Cloud Optimized GeoTIFFs (COGs). These are normalized for tile-to-tile consistency (fixed reflectance scaling) and include automated legends and compact JSON metadata sidecars for web viewers (like OpenLayers).
+- **Analytic (Float32):** Single-band rasters preserving absolute physical units (dB for Radar, Reflectance for Optical). Essential for statistical analysis and automated change detection.
 
-### Sentinel 1 pipeline
+### Smart Processing
 
-- Automatic search and download of imagery from a bounding box or list of bounding boxes
-- Automatic postprocessing
-  - Contrast normalization by percentile
-- Automatic creation of
-  - VV and VH greyscale images
-  - VV/VH and VH/VV ratio pseudocolor images
-  - VV\*VH product pseudocolor images
-  - VV-VH difference pseudocolor images
+- **Single-Pass Rendering:** Indices and visual products are calculated in a single windowed loop to minimize Disk I/O.
+- **Memory Safety:** Parallelism is constrained by `MAX_PARALLEL_FINALIZERS` and single-threaded GDAL sub-processes to prevent OOM kills on 16GB systems.
+- **Lean Metadata:** Footprints are generated using 100m downsampling with recursive hole-filling and coordinate rounding. This makes sidecar JSONs ~100x smaller and faster to generate.
+- **Automatic Dependencies:** If you ask for a fusion product (like `RADAR-BURN`), the pipeline automatically ensures all required analytic source products (VH, NDVI, etc.) are generated first.
+- **GPU Acceleration:** If `cupy` is installed and a CUDA-capable GPU is found, multispectral index math is automatically offloaded to the GPU.
 
-### Sentinel 2 pipeline
+### OSINT & Specialty Products
 
-- Automatic search and download of imagery from a bounding box or list of bounding boxes
-- Automatic postprocessing
-  - Contrast normalization by percentile
-- Automatic creation of
-  - True color images
-  - NIR false color images (red=NIR, green=green, blue=blue)
-  - Atmospheric penetration images (red=2190nm, green=1610nm, blue=NIR)
-  - NDVI images
+- **NDBI_CLEAN:** A vegetation-decoupled building index designed to spot infrastructure in dense environments.
+- **CAMO:** Discovery composite for spotting anomalies in rural/forested terrain.
+- **TARGET-PROBE-V2:** Advanced sensor fusion gating building signatures with radar returns.
+- **LIFE-MACHINE:** Combined SAR/Optical discovery composite for distinguishing natural terrain from man-made structures.
 
 ## Configuration
 
-The following values are supported and can be provided either as environment variables or through an .env-file.
+Settings are handled via a `.env` file.
 
-### Connection
+### CDSE Credentials
 
-| Variable            | Default | Mandatory | Purpose       |
-| ------------------- | ------- | --------- | ------------- |
-| COPERNICUS_USERNAME | empty   | yes       | CDSE username |
-| COPERNICUS_PASSWORD | empty   | yes       | CDSE password |
+| Variable | Description |
+| :--- | :--- |
+| `COPERNICUS_USERNAME` | Your CDSE account email |
+| `COPERNICUS_PASSWORD` | Your CDSE account password |
 
-### General
+### Core Control
 
-| Variable  | Default | Mandatory | Purpose                                                                                                                                                                                                                                                  |
-| --------- | ------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| USE_LOG   | True    | no        | Read and write search log. If True, the search will read the date and time of the last search from the log and use that as startDate. It will also read the list of file UUIDs from the last search and ignore them if they come up in the search again. |
-| PIPELINES | "S1,S2" | no        | Which pipelines to run, S1 = Sentinel 1, S2 = Sentinel 2                                                                                                                                                                                                 |
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `PIPELINES` | `S1,S2,FUSION` (comma-separated list) | `S1,S2` |
+| `USE_LOG` | Skip products already processed (uses `s1_last.json` / `s2_last.json`) | `True` |
+| `TARGET_DIR` | Root directory for the `output/` folder | `.` |
+| `CLEANUP_AFTER_RUN` | Automatically delete raw data after successful processing | `False` |
+| `CLEANUP_DAYS` | Number of days to keep raw data | `30` |
 
-### Sentinel 1 pipeline
+### Performance & Hardware
 
-| Variable       | Default           | Mandatory | Purpose                                                                                                                                                             |
-| -------------- | ----------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| S1_BOX         | empty             | yes       | Box from which to search products in format East, South, West, North. E.g. "24.461060, 60.081284, 25.455322, 60.348696". Suitable boxes can be created e.g. with [bbox finder](http://bboxfinder.com). |
-| S1_MAXRECORDS  | 5                 | no        | Maximum amount of products to return                                                                                                                                |
-| S1_PROCESSES   | "VV,VH,RATIOVVVH" | no        | Which post processing processes to run. VV = VV band greyscale, VH = VH band greyscale, RATIOVVVH = pseudocolor VV,VH,VV/VH, RATIOVHVV = pseudocolor VV,VH,VH/VV    |
-| S1_PRODUCTTYPE | GRD               | no        | Which product type to search for. Stay away from SLC data! The files are extremely huge and I have not been able to get them to process without running out of RAM. |
-| S1_SORTORDER   | descending        | no        | Which direction the results should be sorted                                                                                                                        |
-| S1_SORTPARAM   | startDate         | no        | Which parameter to sort the results by                                                                                                                              |
-| S1_STARTDATE   | yesterday         | no        | Start date of the search                                                                                                                                            |
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `PIPELINE_WORKERS` | Concurrent threads for warping and index calculation | `2` |
+| `MAX_PARALLEL_FINALIZERS` | Concurrent threads for COG and Sidecar generation | `2` |
+| `DISABLE_GPU` | Force CPU mode even if CUDA/CuPy is available | `False` |
+| `ENABLE_GPU_WARP` | Use experimental CUDA-accelerated warping for S1 | `False` |
+| `GDAL_NUM_THREADS` | Number of threads for GDAL internal operations | `PIPELINE_WORKERS` |
 
-### Sentinel 2 pipeline
+### Sentinel-1 (Radar) Parameters
 
-| Variable       | Default             | Mandatory | Purpose                                                                                                                                                                    |
-| -------------- | ------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| S2_BOX         | empty               | yes       | Box from which to search products in format East, South, West, North. E.g. "24.461060, 60.081284, 25.455322, 60.348696". Suitable boxes can be created e.g. with [bbox finder](http://bboxfinder.com). |
-| S2_CLOUDCOVER  | 5                   | no        | Maximum cloud cover                                                                                                                                                        |
-| S2_MAXRECORDS  | 5                   | no        | Maximum amount of products to return                                                                                                                                       |
-| S2_PROCESSES   | "TCI,NIRFC,AP,NDVI" | no        | Which post processing processes to run. TCI = True color image, NIRFC = NIR false color image, AP = atmospheric penetration, NDVI = Normalized Difference Vegetation Index |
-| S2_PRODUCTTYPE | L2A                 | no        | Which product type to search for. L2A gets the best results. L1C works too but the image quality isn't that great.                                                         |
-| S2_SORTORDER   | descending          | no        | Which direction the results should be sorted                                                                                                                               |
-| S2_SORTPARAM   | startDate           | no        | Which parameter to sort the results by                                                                                                                                     |
-| S2_STARTDATE   | yesterday           | no        | Start date of the search                                                                                                                                                   |
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `S1_BOX` | Search area coordinates: `East,South,West,North` | - |
+| `S1_STARTDATE` | Earliest sensing date (YYYY-MM-DD) | Yesterday |
+| `S1_MAXRECORDS` | Maximum number of products to download per box | `5` |
+| `S1_PRODUCTTYPE` | `GRD` (Ground Range Detected) is standard | `GRD` |
+| `S1_SENSORMODE` | `IW` (Interferometric Wide Swath) is standard | `IW` |
+| `S1_SORTPARAM` | CDSE sorting parameter (e.g., `startDate`) | `startDate` |
+| `S1_SORTORDER` | `descending` or `ascending` | `descending` |
+| `S1_PROCESSES` | `VV, VH, RATIOVVVH` | `VV,VH,RATIOVVVH` |
+
+### Sentinel-2 (Optical) Parameters
+
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `S2_BOX` | Search area coordinates: `East,South,West,North` | - |
+| `S2_STARTDATE` | Earliest sensing date (YYYY-MM-DD) | Yesterday |
+| `S2_MAXRECORDS` | Maximum number of products to download per box | `5` |
+| `S2_CLOUDCOVER` | Maximum allowed cloud coverage percentage (0-100) | `5` |
+| `S2_PRODUCTTYPE` | `L2A` (Bottom of Atmosphere) is recommended | `L2A` |
+| `S2_SORTPARAM` | CDSE sorting parameter (e.g., `startDate`) | `startDate` |
+| `S2_SORTORDER` | `descending` or `ascending` | `descending` |
+| `S2_PROCESSES` | `TCI, NIRFC, AP, NDVI, NDBI, NDBI_CLEAN, NDRE, NBR, CAMO` | (All) |
+
+### Fusion Parameters
+
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `FUSION_PROCESSES` | `RADAR-BURN, LIFE-MACHINE, TARGET-PROBE-V2` | (All) |
 
 ## Usage
 
-Assuming you read the caution above, here is how you can try the project out.
+### 1. Setup
 
-> [!NOTE]
-> The instructions are for Linux only because I don't really use Windows
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env  # And edit your CDSE credentials
+```
 
-1. Make sure, Python 3, pip and libgdal are installed
-2. Clone the repo to a convenient place
-3. Create a virtual environment with `python -m venv venv`
-4. Activate the virtual environment with `source venv/bin/activate`
-5. Install the required python modules with `pip install -r requirements.txt`
-6. Copy .env.example to .env and edit according to your needs
-7. Test the pipeline with `python search.py`. If that goes through and shows you results,
-   you can run the pipeline, otherwise, check your config.
-8. Run the pipeline with `python pipelines.py`
+### 2. Run
+
+```bash
+# Search, download, and process new data
+python pipelines.py
+
+# Process existing .SAFE folders in temp/ without searching or downloading
+python pipelines.py --downloaded
+```
+
+## Viewer
+
+The project includes a lightweight web viewer in the `viewer/` directory. It's designed to be served independently (e.g., via Nginx or `python -m http.server`) and reads the `output/` directory to display your products on an OpenLayers map.
+
+## Hardware Acceleration (GPU)
+
+If you want to use your GPU:
+
+1. Install [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) (if using Docker).
+2. Ensure `cupy` is available in your environment.
+3. The pipeline will detect it and switch to GPU kernels for index math.
+4. Set `DISABLE_GPU=True` in `.env` if you need to force CPU mode.

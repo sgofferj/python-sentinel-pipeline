@@ -3,3 +3,7 @@ numpy
 gdal==3.11.3
 rasterio
 dotenv
+shapely
+psutil
+cupy-cuda12x
+apprise
