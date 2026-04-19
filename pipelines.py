@@ -230,3 +230,16 @@ if __name__ == "__main__":
         cleanup.run_cleanup(days=CLEANUP_DAYS, dry_run=False)
 
     func.perf_logger.stop_run()
+
+    # --- Notifications ---
+    total_duration = time.time() - func.perf_logger.start_time
+    minutes = int(total_duration // 60)
+    seconds = int(total_duration % 60)
+    
+    msg = f"Pipeline run complete in {minutes}m {seconds}s.\n"
+    msg += f"Processed: {len(processed_s1)} S1, {len(processed_s2)} S2 products."
+    
+    if should_finalize:
+        msg += "\nInventory updated."
+    
+    notifications.send_notification(msg)
