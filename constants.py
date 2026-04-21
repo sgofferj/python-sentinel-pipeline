@@ -68,11 +68,11 @@ WORKERS: int = int(os.getenv("PIPELINE_WORKERS", "2"))
 BLOCK_SIZE: int = 2048
 
 # ----- Sentinel 2 Band Mapping ---------------------------
-# Source: Sentinel-2 L2A Product Specification
+# Source: Sentinel-2 L2A Product Specification (via GDAL SENTINEL2 Driver)
 # 10m Subdataset
-BAND_BLU: int = 1  # B02 (490nm)
+BAND_RED: int = 1  # B04 (665nm)
 BAND_GRN: int = 2  # B03 (560nm)
-BAND_RED: int = 3  # B04 (665nm)
+BAND_BLU: int = 3  # B02 (490nm)
 BAND_NIR: int = 4  # B08 (842nm)
 
 # 20m Subdataset
