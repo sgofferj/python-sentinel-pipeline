@@ -53,6 +53,10 @@ function downloadFile(url, filename) {
 let map;
 let activeLayers = {}; // path -> {layer, meta}
 let hoverSource;
+let highlightSource;
+let inventoryData = [];
+let identifyOpticalLayer;
+let identifyRadarLayer;
 let masterLegends = {}; 
 let sentinelAttribution = new ol.source.Vector({
     attributions: '' // Starts empty
@@ -81,11 +85,18 @@ document.addEventListener('DOMContentLoaded', () => {
     loadLegends();
     checkLogo();
 
-    // Deselect all button
+    // Action buttons
     const deselectBtn = document.getElementById('deselect-all');
-    if (deselectBtn) {
-        deselectBtn.onclick = deselectAllLayers;
-    }
+    if (deselectBtn) deselectBtn.onclick = deselectAllLayers;
+
+    const zoomBtn = document.getElementById('zoom-available');
+    if (zoomBtn) zoomBtn.onclick = zoomToAvailable;
+
+    const optBtn = document.getElementById('identify-optical');
+    if (optBtn) optBtn.onclick = toggleIdentifyOptical;
+
+    const radBtn = document.getElementById('identify-radar');
+    if (radBtn) radBtn.onclick = toggleIdentifyRadar;
 });
 
 function deselectAllLayers() {
@@ -152,7 +163,7 @@ function initMap() {
     // Scale Line
     map.addControl(new ol.control.ScaleLine({ units: 'metric' }));
 
-    // Hover Preview Source & Layer
+    // Hover Preview Source & Layer (Sidebar hover)
     hoverSource = new ol.source.Vector();
     const hoverLayer = new ol.layer.Vector({
         source: hoverSource,
@@ -162,6 +173,94 @@ function initMap() {
         })
     });
     map.addLayer(hoverLayer);
+
+    // Highlight Source & Layer (Map hover on identify layers)
+    highlightSource = new ol.source.Vector();
+    const highlightLayer = new ol.layer.Vector({
+        source: highlightSource,
+        zIndex: 6000,
+        style: (feature) => {
+            const isOptical = feature.get('isOptical');
+            return new ol.style.Style({
+                stroke: new ol.style.Stroke({ color: '#ffeb3b', width: 3 }),
+                fill: new ol.style.Fill({ color: 'rgba(255, 235, 59, 0.2)' }),
+                text: new ol.style.Text({
+                    text: feature.get('label'),
+                    font: isOptical ? 'bold 14px sans-serif' : '11px sans-serif',
+                    fill: new ol.style.Fill({ color: '#ffeb3b' }),
+                    stroke: new ol.style.Stroke({ color: '#000', width: 3 })
+                })
+            });
+        }
+    });
+    map.addLayer(highlightLayer);
+
+    // Pointer move listener for identify highlights
+    map.on('pointermove', (evt) => {
+        if (evt.dragging) return;
+        
+        highlightSource.clear();
+        const pixel = map.getEventPixel(evt.originalEvent);
+        const feature = map.forEachFeatureAtPixel(pixel, (f, layer) => {
+            if (layer === identifyOpticalLayer || layer === identifyRadarLayer) {
+                return f;
+            }
+        });
+
+        if (feature) {
+            const isOptical = identifyOpticalLayer && identifyOpticalLayer.getSource().getFeatures().includes(feature);
+            const clone = feature.clone();
+            clone.set('isOptical', isOptical);
+            highlightSource.addFeature(clone);
+            map.getTargetElement().style.cursor = 'pointer';
+        } else {
+            map.getTargetElement().style.cursor = '';
+        }
+    });
+
+    // Click listener for identify features
+    map.on('singleclick', (evt) => {
+        const pixel = map.getEventPixel(evt.originalEvent);
+        const feature = map.forEachFeatureAtPixel(pixel, (f, layer) => {
+            if (layer === identifyOpticalLayer || layer === identifyRadarLayer) return f;
+        });
+
+        if (feature) {
+            if (feature.get('isOptical')) {
+                jumpToSidebar('S2', 'TCI', feature.get('label'));
+            } else if (feature.get('isRadar')) {
+                jumpToSidebar('S1', 'RATIO', feature.get('time'));
+            }
+        }
+    });
+}
+
+function jumpToSidebar(sat, prod, identifier) {
+    const group = document.getElementById(`group-${sat}`);
+    const prodGroup = document.getElementById(`prod-${sat}-${prod}`);
+    
+    if (group) group.classList.remove('collapsed');
+    if (prodGroup) {
+        prodGroup.classList.remove('collapsed');
+        
+        // Find the layer item
+        let target;
+        if (sat === 'S2') {
+            target = prodGroup.querySelector(`.layer-item[data-grid="${identifier}"]`);
+        } else {
+            target = prodGroup.querySelector(`.layer-item[data-time="${identifier}"]`);
+        }
+        
+        if (target) {
+            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            // Highlight the target temporarily
+            target.classList.add('jump-highlight');
+            setTimeout(() => target.classList.remove('jump-highlight'), 2000);
+        } else {
+            // If specific layer not found, just scroll to the product group
+            prodGroup.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }
 }
 
 function initBasePicker() {
@@ -242,6 +341,7 @@ async function loadInventory() {
         const data = JSON.parse(jsonString);
 
         if (data.layers && data.layers.length > 0) {
+            inventoryData = data.layers;
             renderLayerPicker(data.layers);
         } else {
             picker.innerHTML = `<div id="loading">Ei kuvia saatavilla.</div>`;
@@ -250,6 +350,157 @@ async function loadInventory() {
         console.error("Inventory error:", e);
         picker.innerHTML = `<div id="loading">Virhe ladattaessa inventaariota: ${e.message}</div>`;
     }
+}
+
+function zoomToAvailable() {
+    if (!inventoryData || inventoryData.length === 0) return;
+    let extent = ol.extent.createEmpty();
+    inventoryData.forEach(layer => {
+        const b = layer.bounds;
+        if (!b) return;
+        const layerExtent = ol.extent.boundingExtent([
+            ol.proj.fromLonLat([b[0][1], b[0][0]]),
+            ol.proj.fromLonLat([b[1][1], b[1][0]])
+        ]);
+        ol.extent.extend(extent, layerExtent);
+    });
+    if (!ol.extent.isEmpty(extent)) {
+        map.getView().fit(extent, { padding: [50, 50, 50, 50], duration: 1000 });
+    }
+}
+
+function toggleIdentifyOptical() {
+    const btn = document.getElementById('identify-optical');
+    if (identifyOpticalLayer) {
+        map.removeLayer(identifyOpticalLayer);
+        identifyOpticalLayer = null;
+        if (highlightSource) highlightSource.clear();
+        btn.classList.remove('active');
+        return;
+    }
+
+    const source = new ol.source.Vector();
+    const grids = {};
+
+    inventoryData.forEach(layer => {
+        if (!layer.product.startsWith('S2')) return;
+        const grid = getGridSquare(layer);
+        if (!grid) return;
+        // Prefer TCI for the 'canonical' layer for the grid if possible
+        if (!grids[grid] || layer.product === 'S2-TCI') {
+            grids[grid] = layer;
+        }
+    });
+
+    Object.keys(grids).forEach(gridId => {
+        const layer = grids[gridId];
+        let feature;
+        if (layer.footprint) {
+            const format = new ol.format.GeoJSON();
+            feature = format.readFeature(layer.footprint, {
+                dataProjection: 'EPSG:4326',
+                featureProjection: 'EPSG:3857'
+            });
+        } else {
+            const b = layer.bounds;
+            const poly = new ol.geom.Polygon([[
+                ol.proj.fromLonLat([b[0][1], b[0][0]]),
+                ol.proj.fromLonLat([b[1][1], b[0][0]]),
+                ol.proj.fromLonLat([b[1][1], b[1][0]]),
+                ol.proj.fromLonLat([b[0][1], b[1][0]]),
+                ol.proj.fromLonLat([b[0][1], b[0][0]])
+            ]]);
+            feature = new ol.Feature(poly);
+        }
+        feature.set('label', gridId);
+        feature.set('isOptical', true);
+        source.addFeature(feature);
+    });
+
+    identifyOpticalLayer = new ol.layer.Vector({
+        source: source,
+        zIndex: 5000,
+        style: (feature) => new ol.style.Style({
+            stroke: new ol.style.Stroke({ color: '#3f51b5', width: 2 }),
+            fill: new ol.style.Fill({ color: 'rgba(63, 81, 181, 0.05)' }),
+            text: new ol.style.Text({
+                text: feature.get('label'),
+                font: 'bold 14px sans-serif',
+                fill: new ol.style.Fill({ color: '#3f51b5' }),
+                stroke: new ol.style.Stroke({ color: '#fff', width: 2 })
+            })
+        })
+    });
+    map.addLayer(identifyOpticalLayer);
+    btn.classList.add('active');
+}
+
+function toggleIdentifyRadar() {
+    const btn = document.getElementById('identify-radar');
+    if (identifyRadarLayer) {
+        map.removeLayer(identifyRadarLayer);
+        identifyRadarLayer = null;
+        if (highlightSource) highlightSource.clear();
+        btn.classList.remove('active');
+        return;
+    }
+
+    const source = new ol.source.Vector();
+    const seen = new Set();
+
+    inventoryData.forEach(layer => {
+        if (!layer.product.startsWith('S1')) return;
+        if (seen.has(layer.acquisition_time)) return;
+        seen.add(layer.acquisition_time);
+        
+        let feature;
+        if (layer.footprint) {
+            const format = new ol.format.GeoJSON();
+            feature = format.readFeature(layer.footprint, {
+                dataProjection: 'EPSG:4326',
+                featureProjection: 'EPSG:3857'
+            });
+        } else {
+            const b = layer.bounds;
+            const poly = new ol.geom.Polygon([[
+                ol.proj.fromLonLat([b[0][1], b[0][0]]),
+                ol.proj.fromLonLat([b[1][1], b[0][0]]),
+                ol.proj.fromLonLat([b[1][1], b[1][0]]),
+                ol.proj.fromLonLat([b[0][1], b[1][0]]),
+                ol.proj.fromLonLat([b[0][1], b[0][0]])
+            ]]);
+            feature = new ol.Feature(poly);
+        }
+        
+        const date = new Date(layer.acquisition_time);
+        const label = date.toLocaleString('en-GB', { 
+            month: 'short', day: 'numeric', 
+            hour: '2-digit', minute: '2-digit', timeZone: 'UTC' 
+        }) + "Z";
+        
+        feature.set('label', label);
+        feature.set('time', layer.acquisition_time);
+        feature.set('isRadar', true);
+        source.addFeature(feature);
+    });
+
+    identifyRadarLayer = new ol.layer.Vector({
+        source: source,
+        zIndex: 5001,
+        style: (feature) => new ol.style.Style({
+            stroke: new ol.style.Stroke({ color: '#3f51b5', width: 2 }),
+            fill: new ol.style.Fill({ color: 'rgba(63, 81, 181, 0.05)' }),
+            text: new ol.style.Text({
+                text: feature.get('label'),
+                font: '11px sans-serif',
+                fill: new ol.style.Fill({ color: '#3f51b5' }),
+                stroke: new ol.style.Stroke({ color: '#fff', width: 2 }),
+                overflow: true
+            })
+        })
+    });
+    map.addLayer(identifyRadarLayer);
+    btn.classList.add('active');
 }
 
 function getGridSquare(layer) {
@@ -336,6 +587,9 @@ function createLayerItem(layer) {
     const div = document.createElement('div');
     div.className = 'layer-item';
     const grid = getGridSquare(layer);
+    if (grid) div.dataset.grid = grid;
+    div.dataset.time = layer.acquisition_time;
+    
     const date = new Date(layer.acquisition_time);
     const friendlyTime = date.toLocaleString('en-GB', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + "Z";
     const sizeStr = formatSize(layer.file_size_bytes);

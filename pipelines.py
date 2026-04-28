@@ -35,6 +35,7 @@ import inventory_manager
 from correlate import run_correlation
 import search
 import cleanup
+import notifications
 
 load_dotenv()
 
@@ -69,7 +70,9 @@ s1_boxes: List[str] = func.get_boxes(S1_BOX)
 s2_boxes: List[str] = func.get_boxes(S2_BOX)
 
 
-def download_products(search_result: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+def download_products(
+    search_result: Dict[str, List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
     """Downloads and unzips satellite products. Returns list of products ready for processing."""
     ready_products: List[Dict[str, Any]] = []
     print("\nStarting downloads phase.", flush=True)
@@ -77,7 +80,7 @@ def download_products(search_result: Dict[str, List[Dict[str, Any]]]) -> List[Di
         for feat in box_files:
             file_id: str = feat["id"]
             filename: str = feat["properties"]["title"]
-            
+
             target_path = os.path.join(c.DIRS["DL"], filename)
             if os.path.exists(target_path):
                 print(f"Already have {filename}, ready for processing.", flush=True)
@@ -94,9 +97,13 @@ def download_products(search_result: Dict[str, List[Dict[str, Any]]]) -> List[Di
                         os.remove(downloaded_zip)
                         ready_products.append(feat)
                 except Exception as error:  # pylint: disable=broad-exception-caught
-                    print(f"Problem downloading/unzipping {filename}: {error}", flush=True)
-                    
-    print(f"Downloads phase complete. {len(ready_products)} products ready.", flush=True)
+                    print(
+                        f"Problem downloading/unzipping {filename}: {error}", flush=True
+                    )
+
+    print(
+        f"Downloads phase complete. {len(ready_products)} products ready.", flush=True
+    )
     return ready_products
 
 
@@ -104,7 +111,7 @@ def scan_local_products() -> Dict[str, List[Dict[str, Any]]]:
     """Scans the download directory for existing .SAFE or product folders."""
     print(f"\nScanning local directory {c.DIRS['DL']} for products...", flush=True)
     local_ready: Dict[str, List[Dict[str, Any]]] = {"s1": [], "s2": []}
-    
+
     if not os.path.exists(c.DIRS["DL"]):
         return local_ready
 
@@ -112,21 +119,28 @@ def scan_local_products() -> Dict[str, List[Dict[str, Any]]]:
         item_path = os.path.join(c.DIRS["DL"], item)
         if not os.path.isdir(item_path):
             continue
-            
+
         # Basic identification by name
         feat = {"properties": {"title": item}, "id": f"local_{item}"}
         if item.startswith("S1"):
             local_ready["s1"].append(feat)
         elif item.startswith("S2"):
             local_ready["s2"].append(feat)
-            
-    print(f"Found {len(local_ready['s1'])} S1 and {len(local_ready['s2'])} S2 local products.", flush=True)
+
+    print(
+        f"Found {len(local_ready['s1'])} S1 and {len(local_ready['s2'])} S2 local products.",
+        flush=True,
+    )
     return local_ready
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Sentinel Pipeline Orchestrator")
-    parser.add_argument("--downloaded", action="store_true", help="Skip search/download and process files already in temp/")
+    parser.add_argument(
+        "--downloaded",
+        action="store_true",
+        help="Skip search/download and process files already in temp/",
+    )
     args = parser.parse_args()
 
     func.perf_logger.start_run()
@@ -181,7 +195,7 @@ if __name__ == "__main__":
                     processed_s1.append(feat)
                 except Exception as e:
                     print(f"Error processing S1 product {filename}: {e}", flush=True)
-        
+
         # Update log ONLY after successful processing and NOT in --downloaded mode
         if processed_s1 and not args.downloaded:
             search.update_last_run("s1", processed_s1)
@@ -193,11 +207,13 @@ if __name__ == "__main__":
         for feat in s2_ready:
             filename = feat["properties"]["title"]
             # Check for L2A or L1C manifest
-            manifest = os.path.join(c.DIRS["DL"], filename, f"MTD_MSI{S2_PRODUCTTYPE}.xml")
+            manifest = os.path.join(
+                c.DIRS["DL"], filename, f"MTD_MSI{S2_PRODUCTTYPE}.xml"
+            )
             if not os.path.exists(manifest):
                 # Fallback to other possible manifest name
                 manifest = os.path.join(c.DIRS["DL"], filename, "MTD_MSIL2A.xml")
-            
+
             if os.path.exists(manifest):
                 try:
                     ds_obj = gdal.Open(manifest)
@@ -206,13 +222,13 @@ if __name__ == "__main__":
                     processed_s2.append(feat)
                 except Exception as e:
                     print(f"Error processing S2 product {filename}: {e}", flush=True)
-        
+
         if processed_s2 and not args.downloaded:
             search.update_last_run("s2", processed_s2)
         print("S2 Processing phase complete.", flush=True)
 
     # 4. Finalization (Fusion & Inventory)
-    should_finalize = (processed_s1 or processed_s2)
+    should_finalize = processed_s1 or processed_s2
     fusion_count = 0
     if args.downloaded and (s1_ready or s2_ready):
         should_finalize = True
@@ -221,7 +237,7 @@ if __name__ == "__main__":
         if "FUSION" in PIPELINES_LIST:
             print("\nChecking for S1/S2 overlaps for fusion...", flush=True)
             fusion_count = run_correlation(FUSION_PROCESSES)
-        
+
         inventory_manager.rebuild_inventory()
     else:
         print("\nNothing new to finalize.", flush=True)
@@ -236,14 +252,14 @@ if __name__ == "__main__":
     total_duration = time.time() - func.perf_logger.start_time
     minutes = int(total_duration // 60)
     seconds = int(total_duration % 60)
-    
+
     msg = f"Pipeline run complete in {minutes}m {seconds}s.\n"
     msg += f"Processed: {len(processed_s1)} S1, {len(processed_s2)} S2"
     if fusion_count > 0:
         msg += f", {fusion_count} Fusion"
     msg += " products."
-    
+
     if should_finalize:
         msg += "\nInventory updated."
-    
+
     notifications.send_notification(msg)

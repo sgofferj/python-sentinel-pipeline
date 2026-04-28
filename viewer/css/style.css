@@ -41,21 +41,37 @@ body {
     color: #aaa;
 }
 
-.deselect-btn {
-    width: 100%;
+.action-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.deselect-btn, .action-btn, .toggle-btn {
+    flex: 1;
     background: transparent;
     border: 1px solid #ffeb3b;
     color: #ffeb3b;
-    padding: 6px;
-    font-size: 0.8rem;
+    padding: 6px 4px;
+    font-size: 0.75rem;
     cursor: pointer;
     border-radius: 4px;
-    margin-top: 5px;
     transition: all 0.2s;
+    white-space: nowrap;
+    text-align: center;
 }
 
-.deselect-btn:hover {
+.deselect-btn:hover, .action-btn:hover, .toggle-btn:hover {
     background: rgba(255, 235, 59, 0.1);
+}
+
+.toggle-btn.active {
+    background: #ffeb3b;
+    color: #1a1a1a;
+}
+
+.deselect-btn {
+    flex: 1.5;
 }
 
 .base-area {
@@ -214,6 +230,15 @@ body {
 .layer-item.active {
     background: #4a4a4a;
     border-left: 4px solid #ffeb3b;
+}
+
+.layer-item.jump-highlight {
+    animation: flash-highlight 2s ease-out;
+}
+
+@keyframes flash-highlight {
+    0% { background-color: rgba(255, 235, 59, 0.4); }
+    100% { background-color: #333; }
 }
 
 .layer-item input {
