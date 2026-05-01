@@ -22,11 +22,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR: str = os.path.dirname(os.path.abspath(__file__))
-TARGET_DIR: str = os.getenv("TARGET_DIR", BASE_DIR)
-OUT_BASE: str = os.path.join(TARGET_DIR, "output")
+# DATA_DIR can be used to move both temp and output to another drive
+DATA_DIR: str = os.getenv("DATA_DIR", BASE_DIR)
+
+# TARGET_DIR still overrides the output location if provided
+TARGET_DIR: str = os.getenv("TARGET_DIR", os.path.join(DATA_DIR, "output"))
+OUT_BASE: str = TARGET_DIR
 
 DIRS: Dict[str, str] = {
-    "DL": os.path.join(BASE_DIR, "temp"),
+    "DL": os.path.join(DATA_DIR, "temp"),
     "TMP": "/tmp",
     "OUT": OUT_BASE,
     # --- VISUAL (8-bit RGBA for Leaflet) ---

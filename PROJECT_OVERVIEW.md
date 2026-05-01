@@ -20,6 +20,8 @@ This document provides a technical inventory of the Python scripts and the archi
 | `legends.py` | **Visuals**: Defines HTML/CSS legends for the various index and fusion products. |
 | `functions.py` | **Utilities**: General helpers and the system-wide performance/resource logger. |
 | `constants.py` | **Config**: Central store for directory paths, band mappings, and rendering constraints. |
+| `cleanup.py` | **Maintenance**: Removes products older than a specified number of days and cleans up logs. |
+| `rebuild_metadata.py` | **Maintenance**: Regenerates all sidecar JSONs for existing visual TIFFs (e.g. after a metadata format change). |
 
 ---
 
