@@ -119,6 +119,17 @@ python pipelines.py
 python pipelines.py --downloaded
 ```
 
+## Maintenance & Utilities
+
+While the pipeline is highly automated, the following utility scripts are available for maintenance:
+
+- **Cleanup**: `python cleanup.py --days 30 --force`  
+  Removes products older than the specified number of days from `output/`, `temp/`, and the search logs. Defaults to 30 days and dry-run mode (remove `--force` to see what would be deleted).
+- **Metadata Rebuild**: `python rebuild_metadata.py`  
+  Bulk regenerates all `.json` sidecar files for existing visual TIFFs. Useful if you've updated the metadata engine or manually moved files.
+- **Inventory Rebuild**: `python inventory_manager.py`  
+  Refreshes the global `inventory.json` used by the web viewer. (Automatically called by the main pipeline and other utilities).
+
 ## Viewer
 
 The project includes a lightweight web viewer in the `viewer/` directory. It's designed to be served independently (e.g., via Nginx or `python -m http.server`) and reads the `output/` directory to display your products on an OpenLayers map.
