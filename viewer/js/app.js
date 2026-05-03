@@ -7,6 +7,7 @@
 const IMAGE_BASE_URL = "imagery/"; 
 const INVENTORY_URL = IMAGE_BASE_URL + "visual/inventory.json";
 const LEGENDS_URL = IMAGE_BASE_URL + "legends/legends.json";
+const CONFIG_URL = "config.json";
 
 // --- UI DICTIONARY ---
 const TRANSLATIONS = {
@@ -82,6 +83,7 @@ const baseLayers = {
 document.addEventListener('DOMContentLoaded', () => {
     initMap();
     initBasePicker();
+    loadConfig();
     loadInventory();
     loadLegends();
     checkLogo();
@@ -317,6 +319,84 @@ async function checkLogo() {
         const resp = await fetch('logo.png', { method: 'HEAD' });
         if (resp.ok) document.getElementById('logo-container').style.display = 'block';
     } catch (e) {}
+}
+
+async function loadConfig() {
+    try {
+        const resp = await fetch(CONFIG_URL);
+        if (resp.ok) {
+            const config = await resp.json();
+            if (config.overlays && Array.isArray(config.overlays)) {
+                loadOverlays(config.overlays);
+            }
+        }
+    } catch (e) {
+        console.warn("Could not load config:", e);
+    }
+}
+
+function loadOverlays(configs) {
+    configs.forEach(cfg => {
+        const isObject = typeof cfg === 'object' && cfg !== null;
+        const url = isObject ? cfg.url : cfg;
+        
+        // Style defaults
+        const color = (isObject && cfg.color) ? cfg.color : '#ffeb3b';
+        const width = (isObject && cfg.lineWidth) ? cfg.lineWidth : 2.5;
+        const markerSize = (isObject && cfg.markerSize) ? cfg.markerSize : 6;
+        
+        let lineDash = null;
+        if (isObject && cfg.lineStyle) {
+            if (cfg.lineStyle === 'dashed') lineDash = [10, 10];
+            else if (cfg.lineStyle === 'dotted') lineDash = [2, 7];
+        }
+
+        const source = new ol.source.Vector({
+            url: url,
+            format: new ol.format.GeoJSON()
+        });
+
+        const layer = new ol.layer.Vector({
+            source: source,
+            zIndex: 10000,
+            style: function(feature) {
+                const geometry = feature.getGeometry();
+                const type = geometry.getType();
+                
+                if (type === 'Point' || type === 'MultiPoint') {
+                    const label = feature.get('label') || feature.get('name') || feature.get('id') || '';
+                    return new ol.style.Style({
+                        image: new ol.style.Circle({
+                            radius: markerSize,
+                            fill: new ol.style.Fill({ color: color }),
+                            stroke: new ol.style.Stroke({ color: '#000', width: 2 })
+                        }),
+                        text: new ol.style.Text({
+                            text: label,
+                            font: 'bold 13px sans-serif',
+                            fill: new ol.style.Fill({ color: '#fff' }),
+                            stroke: new ol.style.Stroke({ color: '#000', width: 3 }),
+                            offsetY: -(markerSize + 10),
+                            overflow: true
+                        })
+                    });
+                } else {
+                    // Polygons and Multipolygons (and LineStrings) - Outline only
+                    return new ol.style.Style({
+                        stroke: new ol.style.Stroke({
+                            color: color,
+                            width: width,
+                            lineDash: lineDash
+                        }),
+                        fill: new ol.style.Fill({
+                            color: 'rgba(255, 235, 59, 0)' // Invisible fill
+                        })
+                    });
+                }
+            }
+        });
+        map.addLayer(layer);
+    });
 }
 
 async function loadLegends() {

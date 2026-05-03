@@ -151,28 +151,33 @@ class connect:  # pylint: disable=invalid-name
                 f"'cloudCover' and att/Value le {cloudCover})"
             )
 
-        spatial_filter: Optional[str] = None
+        spatial_filters: List[str] = []
         if box:
-            try:
-                coords: List[str] = box.split(",")
-                # OData Intersects needs SRID=4326 prefix and unquoted geography literal
-                wkt: str = (
-                    f"POLYGON(({coords[0]} {coords[1]},{coords[2]} {coords[1]},"
-                    f"{coords[2]} {coords[3]},{coords[0]} {coords[3]},"
-                    f"{coords[0]} {coords[1]}))"
-                )
-                spatial_filter = (
-                    f"OData.CSC.Intersects(area=geography'SRID=4326;{wkt}')"
-                )
-            except Exception:  # pylint: disable=broad-exception-caught
-                pass
+            boxes = [box] if isinstance(box, str) else box
+            for b in boxes:
+                try:
+                    coords: List[str] = b.split(",")
+                    # OData Intersects needs SRID=4326 prefix and unquoted geography literal
+                    wkt: str = (
+                        f"POLYGON(({coords[0]} {coords[1]},{coords[2]} {coords[1]},"
+                        f"{coords[2]} {coords[3]},{coords[0]} {coords[3]},"
+                        f"{coords[0]} {coords[1]}))"
+                    )
+                    spatial_filters.append(
+                        f"OData.CSC.Intersects(area=geography'SRID=4326;{wkt}')"
+                    )
+                except Exception:  # pylint: disable=broad-exception-caught
+                    pass
         elif geometry:
-            spatial_filter = (
+            spatial_filters.append(
                 f"OData.CSC.Intersects(area=geography'SRID=4326;{geometry}')"
             )
 
-        if spatial_filter:
-            filters.append(spatial_filter)
+        if spatial_filters:
+            if len(spatial_filters) > 1:
+                filters.append("(" + " or ".join(spatial_filters) + ")")
+            else:
+                filters.append(spatial_filters[0])
 
         filter_query: str = " and ".join(filters)
         url: str = (

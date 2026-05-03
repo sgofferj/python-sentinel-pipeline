@@ -78,6 +78,7 @@ def search_s1(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
     """Searches for Sentinel-1 products. Returns (num_files, results_per_box)."""
     num_files: int = 0
     search_result: Dict[str, List[Dict[str, Any]]] = {}
+    seen_ids = set()
 
     product_type: str = os.getenv("S1_PRODUCTTYPE", "GRD")
     sensor_mode: str = os.getenv("S1_SENSORMODE", "IW")
@@ -113,13 +114,16 @@ def search_s1(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
             box_files: List[Dict[str, Any]] = []
             for feat in result["features"]:
                 if file_id := feat.get("id"):
+                    if file_id in seen_ids:
+                        continue
                     if USE_LOG and file_id in last_ids:
                         continue
                     box_files.append(feat)
+                    seen_ids.add(file_id)
                     num_files += 1
             search_result[box] = box_files
 
-    print(f"Search complete. Found {num_files} new products across {len(boxes)} areas.", flush=True)
+    print(f"Search complete. Found {num_files} unique new products across {len(boxes)} areas.", flush=True)
     return num_files, search_result
 
 
@@ -127,6 +131,7 @@ def search_s2(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
     """Searches for Sentinel-2 products. Returns (num_files, results_per_box)."""
     num_files: int = 0
     search_result: Dict[str, List[Dict[str, Any]]] = {}
+    seen_ids = set()
 
     product_type: str = os.getenv("S2_PRODUCTTYPE", "S2MSI2A")
     cloud_cover: int = int(os.getenv("S2_CLOUDCOVER", "5"))
@@ -161,11 +166,14 @@ def search_s2(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
             box_files: List[Dict[str, Any]] = []
             for feat in result["features"]:
                 if file_id := feat.get("id"):
+                    if file_id in seen_ids:
+                        continue
                     if USE_LOG and file_id in last_ids:
                         continue
                     box_files.append(feat)
+                    seen_ids.add(file_id)
                     num_files += 1
             search_result[box] = box_files
 
-    print(f"S2 search complete. Found {num_files} new products across {len(boxes)} areas.", flush=True)
+    print(f"S2 search complete. Found {num_files} unique new products across {len(boxes)} areas.", flush=True)
     return num_files, search_result
