@@ -9,6 +9,13 @@ const INVENTORY_URL = IMAGE_BASE_URL + "visual/inventory.json";
 const LEGENDS_URL = IMAGE_BASE_URL + "legends/legends.json";
 const CONFIG_URL = "config.json";
 
+// --- LAYER ORDERING (Z-Indices) ---
+// Satellite imagery uses timestamp / 100000 (currently ~17 million).
+// UI and Overlays must be significantly higher to stay on top.
+const Z_INDEX_IDENTIFY = 100000000; // 100M
+const Z_INDEX_HIGHLIGHT = 110000000; // 110M
+const Z_INDEX_OVERLAYS = 200000000; // 200M
+
 // --- UI DICTIONARY ---
 const TRANSLATIONS = {
     "S1": { title: "SAR tutka", subtitle: "(ESA Sentinel 1)" },
@@ -185,6 +192,7 @@ function initMap() {
     hoverSource = new ol.source.Vector();
     const hoverLayer = new ol.layer.Vector({
         source: hoverSource,
+        zIndex: Z_INDEX_HIGHLIGHT,
         style: new ol.style.Style({
             stroke: new ol.style.Stroke({ color: '#00bcd4', width: 3 }),
             fill: new ol.style.Fill({ color: 'rgba(0, 188, 212, 0.1)' })
@@ -196,7 +204,7 @@ function initMap() {
     highlightSource = new ol.source.Vector();
     const highlightLayer = new ol.layer.Vector({
         source: highlightSource,
-        zIndex: 6000,
+        zIndex: Z_INDEX_HIGHLIGHT,
         style: (feature) => {
             const isOptical = feature.get('isOptical');
             return new ol.style.Style({
@@ -336,7 +344,7 @@ async function loadConfig() {
 }
 
 function loadOverlays(configs) {
-    configs.forEach(cfg => {
+    configs.forEach((cfg, index) => {
         const isObject = typeof cfg === 'object' && cfg !== null;
         const url = isObject ? cfg.url : cfg;
         
@@ -358,7 +366,7 @@ function loadOverlays(configs) {
 
         const layer = new ol.layer.Vector({
             source: source,
-            zIndex: 10000,
+            zIndex: Z_INDEX_OVERLAYS + index,
             style: function(feature) {
                 const geometry = feature.getGeometry();
                 const type = geometry.getType();
@@ -527,7 +535,7 @@ function toggleIdentifyOptical() {
 
     identifyOpticalLayer = new ol.layer.Vector({
         source: source,
-        zIndex: 5000,
+        zIndex: Z_INDEX_IDENTIFY,
         style: (feature) => new ol.style.Style({
             stroke: new ol.style.Stroke({ color: '#3f51b5', width: 2 }),
             fill: new ol.style.Fill({ color: 'rgba(63, 81, 181, 0.05)' }),
@@ -594,7 +602,7 @@ function toggleIdentifyRadar() {
 
     identifyRadarLayer = new ol.layer.Vector({
         source: source,
-        zIndex: 5001,
+        zIndex: Z_INDEX_IDENTIFY + 1,
         style: (feature) => new ol.style.Style({
             stroke: new ol.style.Stroke({ color: '#3f51b5', width: 2 }),
             fill: new ol.style.Fill({ color: 'rgba(63, 81, 181, 0.05)' }),
