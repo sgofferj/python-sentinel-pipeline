@@ -70,7 +70,7 @@ Settings are handled via a `.env` file.
 
 | Variable | Description | Default |
 | :--- | :--- | :--- |
-| `S1_BOX` | Search area coordinates: `East,South,West,North` | - |
+| `S1_BOX` | Search area coordinates: `West,South,East,North`. Supports single box, semicolon-separated list (`box1;box2`), or JSON list (`["box1", "box2"]`). | - |
 | `S1_STARTDATE` | Earliest sensing date (YYYY-MM-DD) | Yesterday |
 | `S1_MAXRECORDS` | Maximum number of products to download per box | `5` |
 | `S1_PRODUCTTYPE` | `GRD` (Ground Range Detected) is standard | `GRD` |
@@ -83,7 +83,7 @@ Settings are handled via a `.env` file.
 
 | Variable | Description | Default |
 | :--- | :--- | :--- |
-| `S2_BOX` | Search area coordinates: `East,South,West,North` | - |
+| `S2_BOX` | Search area coordinates: `West,South,East,North`. Supports single box, semicolon-separated list (`box1;box2`), or JSON list (`["box1", "box2"]`). | - |
 | `S2_STARTDATE` | Earliest sensing date (YYYY-MM-DD). If omitted, resumes from the last run date in `s2_last.json`. | Yesterday |
 | `S2_MAXRECORDS` | Maximum number of products to download per box | `5` |
 | `S2_CLOUDCOVER` | Maximum allowed cloud coverage percentage (0-100) | `5` |
@@ -118,6 +118,17 @@ python pipelines.py
 # Process existing .SAFE folders in temp/ without searching or downloading
 python pipelines.py --downloaded
 ```
+
+## Maintenance & Utilities
+
+While the pipeline is highly automated, the following utility scripts are available for maintenance:
+
+- **Cleanup**: `python cleanup.py --days 30 --force`  
+  Removes products older than the specified number of days from `output/`, `temp/`, and the search logs. Defaults to 30 days and dry-run mode (remove `--force` to see what would be deleted).
+- **Metadata Rebuild**: `python rebuild_metadata.py`  
+  Bulk regenerates all `.json` sidecar files for existing visual TIFFs. Useful if you've updated the metadata engine or manually moved files.
+- **Inventory Rebuild**: `python inventory_manager.py`  
+  Refreshes the global `inventory.json` used by the web viewer. (Automatically called by the main pipeline and other utilities).
 
 ## Viewer
 

@@ -7,6 +7,7 @@
 const IMAGE_BASE_URL = "imagery/"; 
 const INVENTORY_URL = IMAGE_BASE_URL + "visual/inventory.json";
 const LEGENDS_URL = IMAGE_BASE_URL + "legends/legends.json";
+const CONFIG_URL = "config.json";
 
 // --- UI DICTIONARY ---
 const TRANSLATIONS = {
@@ -55,6 +56,7 @@ let activeLayers = {}; // path -> {layer, meta}
 let hoverSource;
 let highlightSource;
 let inventoryData = [];
+let s2SortMode = 'product'; // 'product' or 'grid'
 let identifyOpticalLayer;
 let identifyRadarLayer;
 let masterLegends = {}; 
@@ -81,6 +83,7 @@ const baseLayers = {
 document.addEventListener('DOMContentLoaded', () => {
     initMap();
     initBasePicker();
+    loadConfig();
     loadInventory();
     loadLegends();
     checkLogo();
@@ -111,27 +114,42 @@ function deselectAllLayers() {
     });
 }
 
+function updateAcquisitionRange(layers) {
+    const rangeEl = document.getElementById('acq-range');
+    if (!rangeEl || !layers || layers.length === 0) return;
+
+    const times = layers
+        .map(l => l.acquisition_time)
+        .filter(t => t && t !== "Unknown")
+        .sort();
+
+    if (times.length > 0) {
+        const start = times[0];
+        const end = times[times.length - 1];
+        rangeEl.innerText = `(${start} - ${end})`;
+    }
+}
+
 function updateGroupMarkers() {
     // Update Product Groups (e.g. TCI, NDVI)
     const prodGroups = document.querySelectorAll('.prod-group');
     prodGroups.forEach(group => {
         const hasActive = group.querySelectorAll('input:checked').length > 0;
-        if (hasActive) {
-            group.classList.add('has-active');
-        } else {
-            group.classList.remove('has-active');
-        }
+        group.classList.toggle('has-active', hasActive);
+    });
+
+    // Update Grid Groups
+    const gridGroups = document.querySelectorAll('.grid-group');
+    gridGroups.forEach(group => {
+        const hasActive = group.querySelectorAll('input:checked').length > 0;
+        group.classList.toggle('has-active', hasActive);
     });
 
     // Update Main Categories (e.g. S1, S2, FUSED)
     const satGroups = document.querySelectorAll('.sat-group');
     satGroups.forEach(group => {
         const hasActive = group.querySelectorAll('input:checked').length > 0;
-        if (hasActive) {
-            group.classList.add('has-active');
-        } else {
-            group.classList.remove('has-active');
-        }
+        group.classList.toggle('has-active', hasActive);
     });
 }
 
@@ -237,9 +255,20 @@ function initMap() {
 
 function jumpToSidebar(sat, prod, identifier) {
     const group = document.getElementById(`group-${sat}`);
-    const prodGroup = document.getElementById(`prod-${sat}-${prod}`);
-    
     if (group) group.classList.remove('collapsed');
+
+    if (sat === 'S2' && s2SortMode === 'grid') {
+        const gridGroup = document.getElementById(`grid-S2-${identifier}`);
+        if (gridGroup) {
+            gridGroup.classList.remove('collapsed');
+            gridGroup.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            gridGroup.classList.add('jump-highlight');
+            setTimeout(() => gridGroup.classList.remove('jump-highlight'), 2000);
+        }
+        return;
+    }
+
+    const prodGroup = document.getElementById(`prod-${sat}-${prod}`);
     if (prodGroup) {
         prodGroup.classList.remove('collapsed');
         
@@ -292,6 +321,84 @@ async function checkLogo() {
     } catch (e) {}
 }
 
+async function loadConfig() {
+    try {
+        const resp = await fetch(CONFIG_URL);
+        if (resp.ok) {
+            const config = await resp.json();
+            if (config.overlays && Array.isArray(config.overlays)) {
+                loadOverlays(config.overlays);
+            }
+        }
+    } catch (e) {
+        console.warn("Could not load config:", e);
+    }
+}
+
+function loadOverlays(configs) {
+    configs.forEach(cfg => {
+        const isObject = typeof cfg === 'object' && cfg !== null;
+        const url = isObject ? cfg.url : cfg;
+        
+        // Style defaults
+        const color = (isObject && cfg.color) ? cfg.color : '#ffeb3b';
+        const width = (isObject && cfg.lineWidth) ? cfg.lineWidth : 2.5;
+        const markerSize = (isObject && cfg.markerSize) ? cfg.markerSize : 6;
+        
+        let lineDash = null;
+        if (isObject && cfg.lineStyle) {
+            if (cfg.lineStyle === 'dashed') lineDash = [10, 10];
+            else if (cfg.lineStyle === 'dotted') lineDash = [2, 7];
+        }
+
+        const source = new ol.source.Vector({
+            url: url,
+            format: new ol.format.GeoJSON()
+        });
+
+        const layer = new ol.layer.Vector({
+            source: source,
+            zIndex: 10000,
+            style: function(feature) {
+                const geometry = feature.getGeometry();
+                const type = geometry.getType();
+                
+                if (type === 'Point' || type === 'MultiPoint') {
+                    const label = feature.get('label') || feature.get('name') || feature.get('id') || '';
+                    return new ol.style.Style({
+                        image: new ol.style.Circle({
+                            radius: markerSize,
+                            fill: new ol.style.Fill({ color: color }),
+                            stroke: new ol.style.Stroke({ color: '#000', width: 2 })
+                        }),
+                        text: new ol.style.Text({
+                            text: label,
+                            font: 'bold 13px sans-serif',
+                            fill: new ol.style.Fill({ color: '#fff' }),
+                            stroke: new ol.style.Stroke({ color: '#000', width: 3 }),
+                            offsetY: -(markerSize + 10),
+                            overflow: true
+                        })
+                    });
+                } else {
+                    // Polygons and Multipolygons (and LineStrings) - Outline only
+                    return new ol.style.Style({
+                        stroke: new ol.style.Stroke({
+                            color: color,
+                            width: width,
+                            lineDash: lineDash
+                        }),
+                        fill: new ol.style.Fill({
+                            color: 'rgba(255, 235, 59, 0)' // Invisible fill
+                        })
+                    });
+                }
+            }
+        });
+        map.addLayer(layer);
+    });
+}
+
 async function loadLegends() {
     try {
         const url = window.location.origin + window.location.pathname.replace('index.html', '') + LEGENDS_URL;
@@ -342,6 +449,7 @@ async function loadInventory() {
 
         if (data.layers && data.layers.length > 0) {
             inventoryData = data.layers;
+            updateAcquisitionRange(data.layers);
             renderLayerPicker(data.layers);
         } else {
             picker.innerHTML = `<div id="loading">Ei kuvia saatavilla.</div>`;
@@ -510,10 +618,26 @@ function getGridSquare(layer) {
     return filename.startsWith('T') ? filename.split('-')[0] : "";
 }
 
+function setS2SortMode(mode) {
+    if (s2SortMode === mode) return;
+    s2SortMode = mode;
+    renderLayerPicker(inventoryData);
+}
+
 function renderLayerPicker(layers) {
     const picker = document.getElementById('layer-picker');
     const progressBar = document.getElementById('progress-bar');
     const loadingText = document.getElementById('loading-text');
+
+    const satOrder = ['S2', 'S1', 'FUSED'];
+    const expandedSats = new Set();
+    satOrder.forEach(sat => {
+        const oldGroup = document.getElementById(`group-${sat}`);
+        if (oldGroup && !oldGroup.classList.contains('collapsed')) {
+            expandedSats.add(sat);
+        }
+    });
+
     picker.innerHTML = ''; 
 
     const groups = {};
@@ -525,7 +649,6 @@ function renderLayerPicker(layers) {
         groups[sat][type].push(layer);
     });
 
-    const satOrder = ['S2', 'S1', 'FUSED'];
     let totalLayers = layers.length;
     let renderedLayers = 0;
 
@@ -533,54 +656,155 @@ function renderLayerPicker(layers) {
         if (!groups[sat]) return;
         const satMeta = TRANSLATIONS[sat] || { title: sat, subtitle: "" };
         const satDiv = document.createElement('div');
-        satDiv.className = 'sat-group collapsed';
+        satDiv.className = 'sat-group' + (expandedSats.has(sat) ? '' : ' collapsed');
         satDiv.id = `group-${sat}`;
-        satDiv.innerHTML = `
+        
+        let headerHtml = `
             <div class="sat-title" onclick="this.parentElement.classList.toggle('collapsed')">
                 <span>${satMeta.title} <small style="text-transform: none; font-weight: normal; opacity: 0.7;">${satMeta.subtitle}</small></span>
             </div>
-            <div class="prod-container"></div>
         `;
+
+        if (sat === 'S2') {
+            headerHtml += `
+                <div class="sort-row">
+                    <button class="sort-btn ${s2SortMode === 'product' ? 'active' : ''}" onclick="event.stopPropagation(); setS2SortMode('product')">Tuoteittain</button>
+                    <button class="sort-btn ${s2SortMode === 'grid' ? 'active' : ''}" onclick="event.stopPropagation(); setS2SortMode('grid')">Ruuduittain</button>
+                </div>
+            `;
+        }
+
+        headerHtml += `<div class="prod-container"></div>`;
+        satDiv.innerHTML = headerHtml;
         const prodContainer = satDiv.querySelector('.prod-container');
 
-        const types = Object.keys(groups[sat]).sort((a, b) => {
-            if (sat === 'S2') return S2_PRIORITY.indexOf(a) - S2_PRIORITY.indexOf(b);
-            return a.localeCompare(b);
-        });
-
-        types.forEach(type => {
-            const typeMeta = TRANSLATIONS[type] || { title: type, subtitle: "" };
-            const typeDiv = document.createElement('div');
-            typeDiv.className = 'prod-group collapsed';
-            typeDiv.id = `prod-${sat}-${type}`;
-            typeDiv.innerHTML = `
-                <div class="prod-title" onclick="this.parentElement.classList.toggle('collapsed')">
-                    ${typeMeta.title}
-                    <span class="subtitle">${typeMeta.subtitle}</span>
-                </div>
-                <div class="layer-container"></div>
-            `;
-            const layerContainer = typeDiv.querySelector('.layer-container');
-
-            const sortedLayers = groups[sat][type].sort((a, b) => {
-                if (sat === "S2") {
-                    const gridA = getGridSquare(a), gridB = getGridSquare(b);
-                    if (gridA !== gridB) return gridA.localeCompare(gridB);
-                }
-                return b.acquisition_time.localeCompare(a.acquisition_time);
+        if (sat === 'S2' && s2SortMode === 'grid') {
+            // Re-group by grid
+            const gridGroups = {};
+            Object.keys(groups[sat]).forEach(type => {
+                groups[sat][type].forEach(layer => {
+                    const grid = getGridSquare(layer) || "Tuntematon";
+                    if (!gridGroups[grid]) gridGroups[grid] = {};
+                    if (!gridGroups[grid][type]) gridGroups[grid][type] = [];
+                    gridGroups[grid][type].push(layer);
+                });
             });
 
-            sortedLayers.forEach(layer => {
-                layerContainer.appendChild(createLayerItem(layer));
-                renderedLayers++;
-                // 50% to 100% for rendering
-                const percent = 50 + Math.round((renderedLayers / totalLayers) * 50);
-                progressBar.style.width = `${percent}%`;
+            const grids = Object.keys(gridGroups).sort();
+            grids.forEach(grid => {
+                const gridDiv = document.createElement('div');
+                gridDiv.className = 'grid-group collapsed';
+                gridDiv.id = `grid-S2-${grid}`;
+                gridDiv.innerHTML = `
+                    <div class="grid-title" onclick="this.parentElement.classList.toggle('collapsed')">
+                        ${grid}
+                    </div>
+                    <div class="prod-container"></div>
+                `;
+
+                const gridTitle = gridDiv.querySelector('.grid-title');
+                gridTitle.onmouseenter = () => {
+                    // Show outline of a representative layer in this grid
+                    const types = Object.keys(gridGroups[grid]);
+                    let repLayer = null;
+                    if (gridGroups[grid]['TCI']) {
+                        repLayer = gridGroups[grid]['TCI'][0];
+                    } else if (types.length > 0) {
+                        repLayer = gridGroups[grid][types[0]][0];
+                    }
+                    if (repLayer) showLayerHover(repLayer);
+                };
+                gridTitle.onmouseleave = () => hoverSource.clear();
+
+                const gridProdContainer = gridDiv.querySelector('.prod-container');
+
+                const types = Object.keys(gridGroups[grid]).sort((a, b) => S2_PRIORITY.indexOf(a) - S2_PRIORITY.indexOf(b));
+                types.forEach(type => {
+                    const typeMeta = TRANSLATIONS[type] || { title: type, subtitle: "" };
+                    const typeDiv = document.createElement('div');
+                    typeDiv.className = 'prod-group collapsed';
+                    typeDiv.id = `prod-S2-${grid}-${type}`;
+                    typeDiv.innerHTML = `
+                        <div class="prod-title" onclick="this.parentElement.classList.toggle('collapsed')">
+                            ${typeMeta.title}
+                        </div>
+                        <div class="layer-container"></div>
+                    `;
+                    const layerContainer = typeDiv.querySelector('.layer-container');
+                    
+                    const sortedLayers = gridGroups[grid][type].sort((a, b) => b.acquisition_time.localeCompare(a.acquisition_time));
+                    sortedLayers.forEach(layer => {
+                        layerContainer.appendChild(createLayerItem(layer));
+                        renderedLayers++;
+                        const percent = 50 + Math.round((renderedLayers / totalLayers) * 50);
+                        if (progressBar) progressBar.style.width = `${percent}%`;
+                    });
+                    gridProdContainer.appendChild(typeDiv);
+                });
+                prodContainer.appendChild(gridDiv);
             });
-            prodContainer.appendChild(typeDiv);
-        });
+        } else {
+            const types = Object.keys(groups[sat]).sort((a, b) => {
+                if (sat === 'S2') return S2_PRIORITY.indexOf(a) - S2_PRIORITY.indexOf(b);
+                return a.localeCompare(b);
+            });
+
+            types.forEach(type => {
+                const typeMeta = TRANSLATIONS[type] || { title: type, subtitle: "" };
+                const typeDiv = document.createElement('div');
+                typeDiv.className = 'prod-group collapsed';
+                typeDiv.id = `prod-${sat}-${type}`;
+                typeDiv.innerHTML = `
+                    <div class="prod-title" onclick="this.parentElement.classList.toggle('collapsed')">
+                        ${typeMeta.title}
+                        <span class="subtitle">${typeMeta.subtitle}</span>
+                    </div>
+                    <div class="layer-container"></div>
+                `;
+                const layerContainer = typeDiv.querySelector('.layer-container');
+
+                const sortedLayers = groups[sat][type].sort((a, b) => {
+                    if (sat === "S2") {
+                        const gridA = getGridSquare(a), gridB = getGridSquare(b);
+                        if (gridA !== gridB) return gridA.localeCompare(gridB);
+                    }
+                    return b.acquisition_time.localeCompare(a.acquisition_time);
+                });
+
+                sortedLayers.forEach(layer => {
+                    layerContainer.appendChild(createLayerItem(layer));
+                    renderedLayers++;
+                    const percent = 50 + Math.round((renderedLayers / totalLayers) * 50);
+                    if (progressBar) progressBar.style.width = `${percent}%`;
+                });
+                prodContainer.appendChild(typeDiv);
+            });
+        }
         picker.appendChild(satDiv);
     });
+}
+
+function showLayerHover(layer) {
+    if (layer.footprint) {
+        // Use precise footprint if available
+        const format = new ol.format.GeoJSON();
+        const feature = format.readFeature(layer.footprint, {
+            dataProjection: 'EPSG:4326',
+            featureProjection: 'EPSG:3857'
+        });
+        hoverSource.addFeature(feature);
+    } else {
+        // Fallback to bounds
+        const b = layer.bounds; // [[lat, lon], [lat, lon]]
+        const poly = new ol.geom.Polygon([[
+            ol.proj.fromLonLat([b[0][1], b[0][0]]),
+            ol.proj.fromLonLat([b[1][1], b[0][0]]),
+            ol.proj.fromLonLat([b[1][1], b[1][0]]),
+            ol.proj.fromLonLat([b[0][1], b[1][0]]),
+            ol.proj.fromLonLat([b[0][1], b[0][0]])
+        ]]);
+        hoverSource.addFeature(new ol.Feature(poly));
+    }
 }
 
 function createLayerItem(layer) {
@@ -630,27 +854,7 @@ function createLayerItem(layer) {
 
     div.onmouseenter = () => {
         if (div.querySelector('input').checked) return;
-        
-        if (layer.footprint) {
-            // Use precise footprint if available
-            const format = new ol.format.GeoJSON();
-            const feature = format.readFeature(layer.footprint, {
-                dataProjection: 'EPSG:4326',
-                featureProjection: 'EPSG:3857'
-            });
-            hoverSource.addFeature(feature);
-        } else {
-            // Fallback to bounds
-            const b = layer.bounds; // [[lat, lon], [lat, lon]]
-            const poly = new ol.geom.Polygon([[
-                ol.proj.fromLonLat([b[0][1], b[0][0]]),
-                ol.proj.fromLonLat([b[1][1], b[0][0]]),
-                ol.proj.fromLonLat([b[1][1], b[1][0]]),
-                ol.proj.fromLonLat([b[0][1], b[1][0]]),
-                ol.proj.fromLonLat([b[0][1], b[0][0]])
-            ]]);
-            hoverSource.addFeature(new ol.Feature(poly));
-        }
+        showLayerHover(layer);
     };
     div.onmouseleave = () => hoverSource.clear();
 

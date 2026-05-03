@@ -251,16 +251,22 @@ def strtobool(val: str) -> int:
 
 
 def get_boxes(boxes: Optional[str]) -> List[str]:
-    """Parses a box string or JSON list into a Python list."""
+    """Parses a box string, a semicolon-separated list of boxes, or a JSON list into a Python list."""
     if not boxes:
         return []
+    
+    # Try JSON parsing first
     try:
         result = json.loads(boxes)
         if isinstance(result, list):
-            return [str(x) for x in result]
-        return [str(result)]
+            return [str(x).strip() for x in result]
+        return [str(result).strip()]
     except (json.JSONDecodeError, TypeError):
-        return [boxes]
+        # If not JSON, try splitting by semicolon
+        if ";" in boxes:
+            return [x.strip() for x in boxes.split(";")]
+        # Otherwise treat as a single box
+        return [boxes.strip()]
 
 
 def this_moment() -> str:
