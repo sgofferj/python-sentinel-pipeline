@@ -70,7 +70,7 @@ Settings are handled via a `.env` file.
 
 | Variable | Description | Default |
 | :--- | :--- | :--- |
-| `S1_BOX` | Search area coordinates: `East,South,West,North` | - |
+| `S1_BOX` | Search area coordinates: `West,South,East,North`. Supports single box, semicolon-separated list (`box1;box2`), or JSON list (`["box1", "box2"]`). | - |
 | `S1_STARTDATE` | Earliest sensing date (YYYY-MM-DD) | Yesterday |
 | `S1_MAXRECORDS` | Maximum number of products to download per box | `5` |
 | `S1_PRODUCTTYPE` | `GRD` (Ground Range Detected) is standard | `GRD` |
@@ -83,7 +83,7 @@ Settings are handled via a `.env` file.
 
 | Variable | Description | Default |
 | :--- | :--- | :--- |
-| `S2_BOX` | Search area coordinates: `East,South,West,North` | - |
+| `S2_BOX` | Search area coordinates: `West,South,East,North`. Supports single box, semicolon-separated list (`box1;box2`), or JSON list (`["box1", "box2"]`). | - |
 | `S2_STARTDATE` | Earliest sensing date (YYYY-MM-DD). If omitted, resumes from the last run date in `s2_last.json`. | Yesterday |
 | `S2_MAXRECORDS` | Maximum number of products to download per box | `5` |
 | `S2_CLOUDCOVER` | Maximum allowed cloud coverage percentage (0-100) | `5` |

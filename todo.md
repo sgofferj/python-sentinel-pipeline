@@ -1,4 +1,4 @@
 # ToDo
 
-- [x] add envvar for data basedir, so everything incl. temp/ can be on another drive. Note that it should still be possible to set an absolute patch for the output directory.
-- [x] Below "Satelliittikuvat" header, add acquisition time range of available products in ISO format converted to UTC (with "Z") in parentheses
+- [x] Modify bounding box logic to accept either a single bounding box (current method) or a list of bounding boxes. Check CDSE API documentation to verify if multiple bounding boxes can be used in a single search function. If not, modify search function to iterate through the list if a list is given. Document changes and detail envvar format when using lists in Readme.
+- [ ] 
