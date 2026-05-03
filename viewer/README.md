@@ -33,3 +33,45 @@ By default, the viewer looks for images in `../output/`. If you moved your outpu
 const IMAGE_BASE_URL = "../output/"; 
 ```
 You can use an absolute URL here (e.g., `https://maps.example.com/output/`) if the viewer and data are on different hosts.
+
+## GeoJSON Overlays
+
+The viewer supports loading static GeoJSON overlays via a `config.json` file located in the `viewer/` directory. These overlays are displayed on top of all imagery and are non-interactive.
+
+### Configuration (`config.json`)
+
+Create or edit `viewer/config.json` to define your overlays:
+
+```json
+{
+    "overlays": [
+        {
+            "url": "overlays/borders.json",
+            "color": "#ffeb3b",
+            "lineWidth": 2.5,
+            "lineStyle": "solid",
+            "markerSize": 6
+        },
+        {
+            "url": "https://example.com/data/points.geojson",
+            "color": "#00bcd4",
+            "markerSize": 8
+        }
+    ]
+}
+```
+
+### Supported Style Options
+
+| Option | Type | Description | Default |
+| :--- | :--- | :--- | :--- |
+| `url` | String | Path or URL to the GeoJSON file | (Required) |
+| `color` | String | CSS color for lines and markers | `#ffeb3b` (Yellow) |
+| `lineWidth` | Number | Thickness of lines and polygon outlines | `2.5` |
+| `lineStyle` | String | `solid`, `dashed`, or `dotted` | `solid` |
+| `markerSize` | Number | Radius of point markers | `6` |
+
+### Feature Handling
+- **Polygons/MultiPolygons**: Rendered as **outlines only** (no fill).
+- **Points/MultiPoints**: Rendered as circles with the specified `color`. Labels are automatically displayed if the feature has a `label`, `name`, or `id` property.
+- **Interactivity**: Overlays do not respond to mouse hovers or clicks, allowing interactions with imagery layers underneath.
