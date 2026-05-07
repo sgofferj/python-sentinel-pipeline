@@ -51,10 +51,32 @@ def get_acquisition_time(json_path: str) -> Optional[datetime]:
             data = json.load(f)
             atime_str = data.get("acquisition_time")
             if atime_str and atime_str != "Unknown":
-                # Handle formats like 2026-04-07T05:06:44Z
                 return datetime.fromisoformat(atime_str.replace("Z", "+00:00"))
     except (json.JSONDecodeError, IOError, ValueError):
         pass
+    return None
+
+
+def parse_acquisition_time_from_filename(filename: str) -> Optional[datetime]:
+    """Parses acquisition time from analytic filename."""
+    s2_match = re.search(r"S2_(\d{8}T\d{6})Z", filename)
+    if s2_match:
+        time_str = s2_match.group(1)
+        try:
+            dt = datetime.strptime(time_str, "%Y%m%dT%H%M%S")
+            return dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+
+    s1_match = re.search(r"S1_(\d{8}T\d{6})_", filename)
+    if s1_match:
+        time_str = s1_match.group(1)
+        try:
+            dt = datetime.strptime(time_str, "%Y%m%dT%H%M%S")
+            return dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+
     return None
 
 
@@ -85,6 +107,75 @@ def find_outdated_products(days: int) -> List[Dict[str, Any]]:
     return outdated
 
 
+ANALYTIC_HOURS_CUTOFF = 36
+
+
+def find_outdated_analytic_files(
+    hours: int = ANALYTIC_HOURS_CUTOFF,
+) -> List[Dict[str, Any]]:
+    """Scans analytic outputs to find files older than 'hours' from acquisition time."""
+    cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+    outdated: List[Dict[str, Any]] = []
+
+    analytic_root = os.path.join(c.DIRS["OUT"], "analytic")
+
+    if not os.path.exists(analytic_root):
+        return outdated
+
+    for root, _, files in os.walk(analytic_root):
+        for file in files:
+            file_path = os.path.join(root, file)
+
+            acq_time = parse_acquisition_time_from_filename(file)
+            if acq_time is None:
+                try:
+                    file_mtime = datetime.fromtimestamp(
+                        os.path.getmtime(file_path), tz=timezone.utc
+                    )
+                    acq_time = file_mtime
+                except OSError:
+                    continue
+
+            if acq_time < cutoff_time:
+                outdated.append(
+                    {
+                        "file_path": file_path,
+                        "file_name": file,
+                        "acq_time": acq_time,
+                    }
+                )
+
+    return outdated
+
+
+def cleanup_analytic_outputs(
+    products: List[Dict[str, Any]], dry_run: bool = True
+) -> None:
+    """Removes outdated analytic files."""
+    action = "Dry-run: Checking" if dry_run else "Cleaning up"
+    print(
+        f"{action} analytic outputs older than {ANALYTIC_HOURS_CUTOFF} hours...",
+        flush=True,
+    )
+
+    removed_count = 0
+
+    for prod in products:
+        file_path = prod["file_path"]
+        if dry_run:
+            print(f"[DRY-RUN] Would remove analytic file: {file_path}", flush=True)
+            removed_count += 1
+        else:
+            try:
+                os.remove(file_path)
+                removed_count += 1
+            except OSError as e:
+                print(f"Error removing {file_path}: {e}", flush=True)
+
+    count_label = "Would remove" if dry_run else "Removed"
+    print(f"{count_label} {removed_count} analytic files.", flush=True)
+
+
 def remove_product_files(dir_path: str, base_name: str, dry_run: bool = True) -> int:
     """Removes all files in a directory that start with base_name."""
     removed = 0
@@ -95,7 +186,9 @@ def remove_product_files(dir_path: str, base_name: str, dry_run: bool = True) ->
         if filename.startswith(base_name):
             file_to_remove = os.path.join(dir_path, filename)
             if dry_run:
-                print(f"[DRY-RUN] Would remove output file: {file_to_remove}", flush=True)
+                print(
+                    f"[DRY-RUN] Would remove output file: {file_to_remove}", flush=True
+                )
                 removed += 1
             else:
                 try:
@@ -108,24 +201,27 @@ def remove_product_files(dir_path: str, base_name: str, dry_run: bool = True) ->
 
 
 def cleanup_outputs(products: List[Dict[str, Any]], dry_run: bool = True) -> None:
-    """Removes all output files (visual/analytic/sidecars) for outdated products."""
+    """Removes all output files (visual only - analytic handled separately) for outdated products."""
     action = "Dry-run: Checking" if dry_run else "Cleaning up"
     print(
-        f"{action} {len(products)} outdated products from output directories...",
+        f"{action} {len(products)} outdated products from visual output directories...",
         flush=True,
     )
 
     removed_count = 0
-    # Collect all directories that are subdirs of OUT
-    out_dirs = [dp for dp in c.DIRS.values() if dp.startswith(c.DIRS["OUT"])]
+    visual_dirs = [
+        dp
+        for dp in c.DIRS.values()
+        if dp.startswith(os.path.join(c.DIRS["OUT"], "visual"))
+    ]
 
     for prod in products:
         base_name = prod["base_name"]
-        for dir_path in out_dirs:
+        for dir_path in visual_dirs:
             removed_count += remove_product_files(dir_path, base_name, dry_run)
 
     count_label = "Would remove" if dry_run else "Removed"
-    print(f"{count_label} {removed_count} output files.", flush=True)
+    print(f"{count_label} {removed_count} visual output files.", flush=True)
 
 
 def cleanup_source_data(products: List[Dict[str, Any]], dry_run: bool = True) -> None:
@@ -148,7 +244,9 @@ def cleanup_source_data(products: List[Dict[str, Any]], dry_run: bool = True) ->
                     safe_path = os.path.join(c.DIRS["DL"], safe)
                     if os.path.exists(safe_path):
                         if dry_run:
-                            print(f"[DRY-RUN] Would remove source S1: {safe}", flush=True)
+                            print(
+                                f"[DRY-RUN] Would remove source S1: {safe}", flush=True
+                            )
                         else:
                             print(f"Removing source S1 product: {safe}", flush=True)
                             shutil.rmtree(safe_path)
@@ -163,7 +261,9 @@ def cleanup_source_data(products: List[Dict[str, Any]], dry_run: bool = True) ->
                     safe_path = os.path.join(c.DIRS["DL"], safe)
                     if os.path.exists(safe_path):
                         if dry_run:
-                            print(f"[DRY-RUN] Would remove source S2: {safe}", flush=True)
+                            print(
+                                f"[DRY-RUN] Would remove source S2: {safe}", flush=True
+                            )
                         else:
                             print(f"Removing source S2 product: {safe}", flush=True)
                             shutil.rmtree(safe_path)
@@ -212,14 +312,18 @@ def cleanup_logs(products: List[Dict[str, Any]], dry_run: bool = True) -> None:
 
         original_files = log_data.get("files", [])
         new_files = [
-            e for e in original_files 
+            e
+            for e in original_files
             if should_keep_entry(e.get("properties", {}).get("title", ""), products)
         ]
 
         if len(new_files) < len(original_files):
             diff = len(original_files) - len(new_files)
             if dry_run:
-                print(f"[DRY-RUN] Would remove {diff} entries from {sat}_last.json", flush=True)
+                print(
+                    f"[DRY-RUN] Would remove {diff} entries from {sat}_last.json",
+                    flush=True,
+                )
             else:
                 log_data["files"] = new_files
                 with open(log_path, "w", encoding="utf-8") as f:
@@ -249,6 +353,16 @@ def run_cleanup(days: int = 30, dry_run: bool = True) -> None:
             inventory_manager.rebuild_inventory()
         else:
             print("\n[DRY-RUN] Skipping inventory rebuild.", flush=True)
+
+    print(
+        f"\n--- Cleaning up analytic outputs older than {ANALYTIC_HOURS_CUTOFF} hours ---",
+        flush=True,
+    )
+    outdated_analytic_list = find_outdated_analytic_files(ANALYTIC_HOURS_CUTOFF)
+    if outdated_analytic_list:
+        cleanup_analytic_outputs(outdated_analytic_list, dry_run)
+    else:
+        print("No outdated analytic files found.", flush=True)
 
     print(f"--- Cleanup ({mode}) complete ---", flush=True)
 
