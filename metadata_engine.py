@@ -76,144 +76,144 @@ def generate_sidecar(
 
     try:
         with rio.open(tif_path) as src:
-        # 1. Calculate footprint from Alpha channel (usually last band)
-        # We downsample by factor of 10 (10m -> 100m) for footprint extraction.
-        # This makes the vectorization 100x faster and reduces noise automatically.
-        mask_band = src.count if src.count > 1 else 1
+            # 1. Calculate footprint from Alpha channel (usually last band)
+            # We downsample by factor of 10 (10m -> 100m) for footprint extraction.
+            # This makes the vectorization 100x faster and reduces noise automatically.
+            mask_band = src.count if src.count > 1 else 1
 
-        factor = 10
-        new_height = max(1, src.height // factor)
-        new_width = max(1, src.width // factor)
+            factor = 10
+            new_height = max(1, src.height // factor)
+            new_width = max(1, src.width // factor)
 
-        # Use 'mode' resampling to keep the mask clean
-        mask = src.read(
-            mask_band,
-            out_shape=(new_height, new_width),
-            resampling=rio.enums.Resampling.mode,
-        )
-
-        # Adjust transform for downsampled mask
-        transform = src.transform * src.transform.scale(
-            (src.width / mask.shape[-1]), (src.height / mask.shape[-2])
-        )
-
-        # Only pixels > 0 are valid data
-        # For NDVI, values > 0 are usually vegetation, but here we want the footprint
-        # If it's a visual product (4 bands), the last band is a dedicated Alpha.
-        # If it's a single band analytic, we take what we have.
-        mask_bit = (mask > 0).astype(np.uint8)
-        del mask
-
-        # Extract shapes (polygons) from the mask
-        results = (
-            {"properties": {"raster_val": v}, "geometry": s}
-            for i, (s, v) in enumerate(
-                shapes(mask_bit, mask=mask_bit, transform=transform)
+            # Use 'mode' resampling to keep the mask clean
+            mask = src.read(
+                mask_band,
+                out_shape=(new_height, new_width),
+                resampling=rio.enums.Resampling.mode,
             )
-        )
 
-        # Convert to Shapely objects with area filter
-        geoms = []
-        for r in results:
-            g = shape(r["geometry"])
-            # Area filter: ignore anything smaller than 4 hectares (40,000 m2)
-            # to keep the inventory really clean.
-            if g.area > 40000:
-                geoms.append(g)
+            # Adjust transform for downsampled mask
+            transform = src.transform * src.transform.scale(
+                (src.width / mask.shape[-1]), (src.height / mask.shape[-2])
+            )
 
-        del mask_bit
+            # Only pixels > 0 are valid data
+            # For NDVI, values > 0 are usually vegetation, but here we want the footprint
+            # If it's a visual product (4 bands), the last band is a dedicated Alpha.
+            # If it's a single band analytic, we take what we have.
+            mask_bit = (mask > 0).astype(np.uint8)
+            del mask
 
-        if not geoms:
-            # Fallback to bounds
-            bounds = transform_bounds(src.crs, "EPSG:4326", *src.bounds)
-            leaflet_bounds: List[List[float]] = [
-                [round(bounds[1], 5), round(bounds[0], 5)],
-                [round(bounds[3], 5), round(bounds[2], 5)],
-            ]
-            footprint = None
-        else:
-            # Merge and simplify polygons
-            # Downsampled shapes are already much fewer, making union fast
-            combined = unary_union(geoms)
-            del geoms
+            # Extract shapes (polygons) from the mask
+            results = (
+                {"properties": {"raster_val": v}, "geometry": s}
+                for i, (s, v) in enumerate(
+                    shapes(mask_bit, mask=mask_bit, transform=transform)
+                )
+            )
 
-            # Use buffer(0) to clean up
-            combined = combined.buffer(0)
+            # Convert to Shapely objects with area filter
+            geoms = []
+            for r in results:
+                g = shape(r["geometry"])
+                # Area filter: ignore anything smaller than 4 hectares (40,000 m2)
+                # to keep the inventory really clean.
+                if g.area > 40000:
+                    geoms.append(g)
 
-            # --- Robust Hole Filling ---
-            # Removes all internal 'voids' (sensor noise, cloud shadows)
-            # only from the SIDE-CAR metadata to keep JSON compact.
-            combined = fill_holes(combined)
+            del mask_bit
 
-            # Simplify with 40m tolerance
-            combined = combined.simplify(40.0, preserve_topology=True)
+            if not geoms:
+                # Fallback to bounds
+                bounds = transform_bounds(src.crs, "EPSG:4326", *src.bounds)
+                leaflet_bounds: List[List[float]] = [
+                    [round(bounds[1], 5), round(bounds[0], 5)],
+                    [round(bounds[3], 5), round(bounds[2], 5)],
+                ]
+                footprint = None
+            else:
+                # Merge and simplify polygons
+                # Downsampled shapes are already much fewer, making union fast
+                combined = unary_union(geoms)
+                del geoms
 
-            # Extreme noise reduction: keep top 25 parts max
-            if combined.geom_type == "MultiPolygon":
-                parts = sorted(combined.geoms, key=lambda p: p.area, reverse=True)
-                combined = MultiPolygon(parts[:25]) if len(parts) > 1 else parts[0]
+                # Use buffer(0) to clean up
+                combined = combined.buffer(0)
+
+                # --- Robust Hole Filling ---
+                # Removes all internal 'voids' (sensor noise, cloud shadows)
+                # only from the SIDE-CAR metadata to keep JSON compact.
+                combined = fill_holes(combined)
+
+                # Simplify with 40m tolerance
                 combined = combined.simplify(40.0, preserve_topology=True)
 
-            # Transform to EPSG:4326
-            footprint_raw = transform_geom(src.crs, "EPSG:4326", mapping(combined))
+                # Extreme noise reduction: keep top 25 parts max
+                if combined.geom_type == "MultiPolygon":
+                    parts = sorted(combined.geoms, key=lambda p: p.area, reverse=True)
+                    combined = MultiPolygon(parts[:25]) if len(parts) > 1 else parts[0]
+                    combined = combined.simplify(40.0, preserve_topology=True)
 
-            # --- Round Coordinates ---
-            # Shaves off 60-70% of JSON size by limiting precision to ~1.1m
-            footprint = round_coordinates(footprint_raw, 5)
+                # Transform to EPSG:4326
+                footprint_raw = transform_geom(src.crs, "EPSG:4326", mapping(combined))
 
-            # Bounds for quick Leaflet fitBounds
-            b = combined.bounds
-            b4326 = transform_bounds(src.crs, "EPSG:4326", *b)
-            leaflet_bounds = [
-                [round(b4326[1], 5), round(b4326[0], 5)],
-                [round(b4326[3], 5), round(b4326[2], 5)],
-            ]
-            del combined
+                # --- Round Coordinates ---
+                # Shaves off 60-70% of JSON size by limiting precision to ~1.1m
+                footprint = round_coordinates(footprint_raw, 5)
 
-        # Extract Acquisition Time from filename
-        filename: str = os.path.basename(tif_path)
-        timestamp: str = "Unknown"
+                # Bounds for quick Leaflet fitBounds
+                b = combined.bounds
+                b4326 = transform_bounds(src.crs, "EPSG:4326", *b)
+                leaflet_bounds = [
+                    [round(b4326[1], 5), round(b4326[0], 5)],
+                    [round(b4326[3], 5), round(b4326[2], 5)],
+                ]
+                del combined
 
-        s1_match: Optional[re.Match] = re.search(r"S1_(\d{8}T\d{6})", filename)
-        s2_match: Optional[re.Match] = re.search(r"-(\d{8}T\d{6}Z)", filename)
+            # Extract Acquisition Time from filename
+            filename: str = os.path.basename(tif_path)
+            timestamp: str = "Unknown"
 
-        if s1_match:
-            raw_t: str = s1_match.group(1)
-            timestamp = (
-                f"{raw_t[:4]}-{raw_t[4:6]}-{raw_t[6:8]}T"
-                f"{raw_t[9:11]}:{raw_t[11:13]}:{raw_t[13:15]}Z"
+            s1_match: Optional[re.Match] = re.search(r"S1_(\d{8}T\d{6})", filename)
+            s2_match: Optional[re.Match] = re.search(r"-(\d{8}T\d{6}Z)", filename)
+
+            if s1_match:
+                raw_t: str = s1_match.group(1)
+                timestamp = (
+                    f"{raw_t[:4]}-{raw_t[4:6]}-{raw_t[6:8]}T"
+                    f"{raw_t[9:11]}:{raw_t[11:13]}:{raw_t[13:15]}Z"
+                )
+            elif s2_match:
+                raw_t_s2: str = s2_match.group(1)
+                timestamp = (
+                    f"{raw_t_s2[:4]}-{raw_t_s2[4:6]}-{raw_t_s2[6:8]}T"
+                    f"{raw_t_s2[9:11]}:{raw_t_s2[11:13]}:{raw_t_s2[13:15]}Z"
+                )
+
+            metadata = {
+                "product": product_type,
+                "acquisition_time": timestamp,
+                "render_time": datetime.now().isoformat() + "Z",
+                "resolution": (
+                    effective_res if effective_res is not None else round(src.res[0], 1)
+                ),
+                "bounds": leaflet_bounds,
+                "footprint": footprint,
+                "legend_id": legend_id,
+                "crs": "EPSG:3857",
+            }
+
+            if cloud_cover is not None:
+                metadata["cloud_cover"] = round(float(cloud_cover), 1)
+
+            with open(sidecar_path, "w", encoding="utf-8") as f:
+                json.dump(metadata, f, separators=(",", ":"))
+
+            elapsed = time.time() - start_time
+            print(
+                f"Sidecar generated in {elapsed:.2f}s: {os.path.basename(sidecar_path)}",
+                flush=True,
             )
-        elif s2_match:
-            raw_t_s2: str = s2_match.group(1)
-            timestamp = (
-                f"{raw_t_s2[:4]}-{raw_t_s2[4:6]}-{raw_t_s2[6:8]}T"
-                f"{raw_t_s2[9:11]}:{raw_t_s2[11:13]}:{raw_t_s2[13:15]}Z"
-            )
-
-        metadata = {
-            "product": product_type,
-            "acquisition_time": timestamp,
-            "render_time": datetime.now().isoformat() + "Z",
-            "resolution": (
-                effective_res if effective_res is not None else round(src.res[0], 1)
-            ),
-            "bounds": leaflet_bounds,
-            "footprint": footprint,
-            "legend_id": legend_id,
-            "crs": "EPSG:3857",
-        }
-
-        if cloud_cover is not None:
-            metadata["cloud_cover"] = round(float(cloud_cover), 1)
-
-        with open(sidecar_path, "w", encoding="utf-8") as f:
-            json.dump(metadata, f, separators=(",", ":"))
-
-        elapsed = time.time() - start_time
-        print(
-            f"Sidecar generated in {elapsed:.2f}s: {os.path.basename(sidecar_path)}",
-            flush=True,
-        )
     except Exception as e:  # pylint: disable=broad-exception-caught
         print(f"Error processing {os.path.basename(tif_path)}: {e}", flush=True)
 
