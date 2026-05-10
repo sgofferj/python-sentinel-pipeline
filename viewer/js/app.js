@@ -143,15 +143,11 @@ function updateNextOverflight(overflights) {
 
     let text = "";
     if (overflights.S2) {
-        const d = new Date(overflights.S2.time);
-        const t = d.toLocaleString('en-GB', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + "Z";
-        text += `Next S2: ${t}`;
+        text += `Next S2: ${overflights.S2.time}`;
     }
     if (overflights.S1) {
-        const d = new Date(overflights.S1.time);
-        const t = d.toLocaleString('en-GB', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + "Z";
         if (text) text += " | ";
-        text += `Next S1: ${t}`;
+        text += `Next S1: ${overflights.S1.time}`;
     }
     nextEl.innerText = text;
 }

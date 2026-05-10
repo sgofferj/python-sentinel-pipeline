@@ -119,9 +119,10 @@ def get_next_overflight(
                     if best_pass is None or pass_time < best_pass["time"]:
                         best_pass = {
                             "satellite": name,
-                            "time": pass_time.isoformat().replace("+00:00", "Z"),
+                            "time": pass_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
                             "raw_time": pass_time,
                         }
+
 
         if best_pass:
             del best_pass["raw_time"]
