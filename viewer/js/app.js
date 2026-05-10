@@ -143,13 +143,13 @@ function updateNextOverflight(overflights) {
 
     let text = "";
     if (overflights.S2) {
-        text += `Next S2: ${overflights.S2.time}`;
+        text += `Seuraava S2: ${overflights.S2.time}`;
     }
     if (overflights.S1) {
-        if (text) text += " | ";
-        text += `Next S1: ${overflights.S1.time}`;
+        if (text) text += "<br>";
+        text += `Seuraava S1: ${overflights.S1.time}`;
     }
-    nextEl.innerText = text;
+    nextEl.innerHTML = text;
 }
 
 function updateGroupMarkers() {
