@@ -117,17 +117,19 @@ def get_next_overflight(
             for ti, event in zip(t, events):
                 if event == 1:  # Peak of pass
                     pass_time = ti.utc_datetime().replace(tzinfo=timezone.utc)
-                    if best_pass is None or pass_time < best_pass["time"]:
+                    if best_pass is None or pass_time < best_pass["raw_time"]:
                         best_pass = {
                             "satellite": name,
-                            "time": pass_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
                             "raw_time": pass_time,
                         }
 
-
         if best_pass:
-            del best_pass["raw_time"]
-            return best_pass
+            # Convert to final output format
+            result = {
+                "satellite": best_pass["satellite"],
+                "time": best_pass["raw_time"].strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+            return result
     except Exception as e:
         print(f"Error predicting overflight for {bbox_str}: {e}", flush=True)
 
