@@ -349,6 +349,11 @@ body {
     color: #888;
 }
 
+.layer-cloud {
+    color: #00bcd4;
+    font-weight: 600;
+}
+
 .layer-actions {
     margin-left: auto;
     display: flex;

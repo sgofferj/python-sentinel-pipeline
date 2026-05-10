@@ -823,14 +823,25 @@ function createLayerItem(layer) {
     div.dataset.time = layer.acquisition_time;
     
     const date = new Date(layer.acquisition_time);
-    const friendlyTime = date.toLocaleString('en-GB', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + "Z";
+    const friendlyTime =
+        date.toLocaleString("en-GB", {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+            timeZone: "UTC",
+        }) + "Z";
     const sizeStr = formatSize(layer.file_size_bytes);
+    const cloudStr =
+        layer.cloud_cover !== undefined && layer.cloud_cover !== null
+            ? `<span class="layer-cloud">☁️ ${layer.cloud_cover}%</span> `
+            : "";
 
     div.innerHTML = `
         <input type="checkbox" id="chk-${layer.path}">
         <div class="layer-info">
             <span class="layer-time">${grid ? grid + ", " : ""}${friendlyTime}</span>
-            <span class="layer-status">${layer.acquisition_time.split('T')[0]}</span>
+            <span class="layer-status">${cloudStr}${layer.acquisition_time.split("T")[0]}</span>
         </div>
         <div class="layer-actions">
             <button class="dl-btn" title="Lataa täysi TIF">

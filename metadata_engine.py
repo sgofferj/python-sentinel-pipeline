@@ -61,6 +61,7 @@ def generate_sidecar(
     product_type: str,
     legend_id: str,
     effective_res: Optional[float] = None,
+    cloud_cover: Optional[float] = None,
 ) -> None:
     """
     Generates a .json sidecar for a Visual TIF.
@@ -200,6 +201,9 @@ def generate_sidecar(
             "legend_id": legend_id,
             "crs": "EPSG:3857",
         }
+
+        if cloud_cover is not None:
+            metadata["cloud_cover"] = round(float(cloud_cover), 1)
 
         with open(sidecar_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, separators=(",", ":"))

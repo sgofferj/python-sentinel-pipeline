@@ -189,6 +189,7 @@ def _render_internal(
     visual_paths: Dict[str, str],
     analytic_paths: Dict[str, str],
     skip_overviews: bool = False,
+    cloud_cover: Optional[float] = None,
 ) -> None:
     """Macro-block threaded renderer for S2 indices using Double Buffering and GPU Concurrency."""
     func.perf_logger.start_step("S2 Single-Pass Render", use_gpu=True)
@@ -536,7 +537,11 @@ def _render_internal(
                     else 10.0
                 )
                 meta.generate_sidecar(
-                    path, f"S2-{p_type}", f"S2-{p_type}", effective_res=eff_res
+                    path,
+                    f"S2-{p_type}",
+                    f"S2-{p_type}",
+                    effective_res=eff_res,
+                    cloud_cover=cloud_cover,
                 )
                 cog.convert_to_cog(path)
 
@@ -598,6 +603,11 @@ def run_pipeline(
         if p in needed_analytics or p in processes:
             if f"ANA_S2_{p}" in c.DIRS:
                 a_paths[p] = f"{c.DIRS[f'ANA_S2_{p}']}/{name}-{p}"
+    # Extract Cloud Cover from metadata
+    meta_dict = ds_obj.GetMetadata()
+    cc_val = meta_dict.get("CLOUD_COVERAGE_ASSESSMENT")
+    cloud_cover = float(cc_val) if cc_val is not None else None
+
     prepare(ds_obj)
-    _render_internal(v_paths, a_paths)
+    _render_internal(v_paths, a_paths, cloud_cover=cloud_cover)
     cleanup()

@@ -99,7 +99,7 @@ def run_roi_stage(process_all: bool = False) -> int:
     """
     Main entry point for the ROI stage.
     Scans the inventory and processes ROI crops.
-    
+
     Args:
         process_all: If True, processes all files on disk. If False, only new files from this run.
     """
@@ -132,18 +132,24 @@ def run_roi_stage(process_all: bool = False) -> int:
         print("Standalone Mode: Checking all inventory files.", flush=True)
     else:
         # Filter for "new" files rendered in this run
-        run_start_dt = datetime.fromtimestamp(func.perf_logger.start_time, tz=timezone.utc)
+        run_start_dt = datetime.fromtimestamp(
+            func.perf_logger.start_time, tz=timezone.utc
+        )
         for layer in inventory.get("layers", []):
             render_time_str = layer.get("render_time", "")
             if not render_time_str:
                 continue
             try:
-                render_dt = datetime.fromisoformat(render_time_str.replace("Z", "+00:00"))
+                render_dt = datetime.fromisoformat(
+                    render_time_str.replace("Z", "+00:00")
+                )
                 if render_dt >= run_start_dt:
                     layers_to_check.append(layer)
             except Exception:
                 continue
-        print(f"Pipeline Mode: Checking {len(layers_to_check)} new products.", flush=True)
+        print(
+            f"Pipeline Mode: Checking {len(layers_to_check)} new products.", flush=True
+        )
 
     if not layers_to_check:
         print("No products found for ROI processing.", flush=True)
