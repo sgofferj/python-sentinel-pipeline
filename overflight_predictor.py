@@ -66,27 +66,6 @@ def get_env_mapping() -> Dict[str, str]:
     return mapping
 
 
-def resolve_box(box_str: str) -> str:
-    """Manually resolves ${VAR} references if load_dotenv failed to expand them."""
-    if not box_str.startswith("${") or not box_str.endswith("}"):
-        return box_str
-
-    var_name = box_str[2:-1]
-    val = os.getenv(var_name)
-    if val:
-        return val.strip().strip('"').strip("'")
-
-    # Fallback: search .env directly
-    env_path = os.path.join(os.getcwd(), ".env")
-    if os.path.exists(env_path):
-        with open(env_path, "r", encoding="utf-8") as f:
-            for line in f:
-                if line.strip().startswith(var_name):
-                    _, v = line.split("=", 1)
-                    return v.strip().strip('"').strip("'")
-    return box_str
-
-
 def fetch_tles() -> Dict[int, List[str]]:
     """Fetches TLEs from Celestrak for Sentinels individually."""
     import requests
@@ -167,24 +146,19 @@ def predict_all() -> List[Dict[str, Any]]:
 
     coord_to_label = get_env_mapping()
 
-    s1_raw = os.getenv("S1_BOX", "")
-    s2_raw = os.getenv("S2_BOX", "")
-
-    # Split by semicolon and resolve each
-    s1_items = [item.strip() for item in s1_raw.split(";") if item.strip()]
-    s2_items = [item.strip() for item in s2_raw.split(";") if item.strip()]
+    s1_boxes = func.get_boxes(os.getenv("S1_BOX", ""))
+    s2_boxes = func.get_boxes(os.getenv("S2_BOX", ""))
 
     all_predictions = []
 
-    for mission, items, sat_group in [
-        ("S1", s1_items, SENTINELS["S1"]),
-        ("S2", s2_items, SENTINELS["S2"]),
+    for mission, boxes, sat_group in [
+        ("S1", s1_boxes, SENTINELS["S1"]),
+        ("S2", s2_boxes, SENTINELS["S2"]),
     ]:
-        for item in items:
-            resolved = resolve_box(item)
-            res = get_next_pass(resolved, sat_group, tles)
+        for bbox_str in boxes:
+            res = get_next_pass(bbox_str, sat_group, tles)
             if res:
-                label = coord_to_label.get(resolved, "")
+                label = coord_to_label.get(bbox_str, "")
                 suffix = f" ({label})" if label else ""
                 all_predictions.append(
                     {
