@@ -7,3 +7,4 @@ shapely
 psutil
 cupy-cuda12x
 apprise
+skyfield

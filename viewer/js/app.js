@@ -137,6 +137,25 @@ function updateAcquisitionRange(layers) {
     }
 }
 
+function updateNextOverflight(overflights) {
+    const nextEl = document.getElementById('next-overflight');
+    if (!nextEl || !overflights) return;
+
+    let text = "";
+    if (overflights.S2) {
+        const d = new Date(overflights.S2.time);
+        const t = d.toLocaleString('en-GB', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + "Z";
+        text += `Next S2: ${t}`;
+    }
+    if (overflights.S1) {
+        const d = new Date(overflights.S1.time);
+        const t = d.toLocaleString('en-GB', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + "Z";
+        if (text) text += " | ";
+        text += `Next S1: ${t}`;
+    }
+    nextEl.innerText = text;
+}
+
 function updateGroupMarkers() {
     // Update Product Groups (e.g. TCI, NDVI)
     const prodGroups = document.querySelectorAll('.prod-group');
@@ -458,9 +477,11 @@ async function loadInventory() {
         if (data.layers && data.layers.length > 0) {
             inventoryData = data.layers;
             updateAcquisitionRange(data.layers);
+            updateNextOverflight(data.next_overflights);
             renderLayerPicker(data.layers);
         } else {
             picker.innerHTML = `<div id="loading">Ei kuvia saatavilla.</div>`;
+            if (data.next_overflights) updateNextOverflight(data.next_overflights);
         }
     } catch (e) {
         console.error("Inventory error:", e);

@@ -20,6 +20,7 @@ from typing import Any, Dict, List
 
 import constants as c
 import functions as func
+import overflight_predictor
 
 
 def rebuild_inventory() -> None:
@@ -30,7 +31,10 @@ def rebuild_inventory() -> None:
     func.perf_logger.start_step("Rebuilding Global Inventory")
 
     visual_root: str = os.path.join(c.DIRS["OUT"], "visual")
-    inventory: Dict[str, List[Dict[str, Any]]] = {"layers": []}
+    inventory: Dict[str, Any] = {
+        "layers": [],
+        "next_overflights": overflight_predictor.predict_all(),
+    }
 
     # Walk through all visual subdirectories
     for root, _, files in os.walk(visual_root):
