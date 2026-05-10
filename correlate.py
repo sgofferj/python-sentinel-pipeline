@@ -226,11 +226,16 @@ def fuse_radar_optical(
     """Fuses S1-VH detections over S2-TCI background."""
     if not os.path.exists(vh_path) or not os.path.exists(tci_path):
         missing = []
-        if not os.path.exists(vh_path): missing.append(os.path.basename(vh_path))
-        if not os.path.exists(tci_path): missing.append(os.path.basename(tci_path))
-        print(f"Skipping RADAR-BURN for {out_name}: Missing {', '.join(missing)}", flush=True)
+        if not os.path.exists(vh_path):
+            missing.append(os.path.basename(vh_path))
+        if not os.path.exists(tci_path):
+            missing.append(os.path.basename(tci_path))
+        print(
+            f"Skipping RADAR-BURN for {out_name}: Missing {', '.join(missing)}",
+            flush=True,
+        )
         return False
-        
+
     out_path = os.path.join(c.DIRS["VIS_FUSED"], f"{out_name}-RADAR-BURN.tif")
     if func.output_exists(out_path.replace(".tif", "")):
         return False
@@ -315,14 +320,16 @@ def fuse_radar_optical(
                     )
                     s2_win_data[3] = (mask_norm * 255).astype(np.uint8)
                     for b in range(3):
-                        s2_win_data[b] = (s2_win_data[b].astype(float) * mask_norm).astype(
-                            np.uint8
-                        )
+                        s2_win_data[b] = (
+                            s2_win_data[b].astype(float) * mask_norm
+                        ).astype(np.uint8)
                     dst.write(s2_win_data, window=window)
 
         func.perf_logger.end_step()
         build_overviews_gdal(out_path)
-        meta.generate_sidecar(out_path, "FUSED-RADAR-BURN", "RADAR-BURN", effective_res=10.0)
+        meta.generate_sidecar(
+            out_path, "FUSED-RADAR-BURN", "RADAR-BURN", effective_res=10.0
+        )
         cog.convert_to_cog(out_path)
         return True
     except Exception as e:
@@ -343,9 +350,12 @@ def fuse_target_probe_v2(
     paths = {"VH": vh_path, "NDBI": ndbi_path, "NDRE": ndre_path, "TCI": tci_path}
     missing = [name for name, p in paths.items() if not os.path.exists(p)]
     if missing:
-        print(f"Skipping TARGET-PROBE-V2 for {out_name}: Missing {', '.join(missing)} products", flush=True)
+        print(
+            f"Skipping TARGET-PROBE-V2 for {out_name}: Missing {', '.join(missing)} products",
+            flush=True,
+        )
         return False
-        
+
     out_path = os.path.join(c.DIRS["VIS_FUSED"], f"{out_name}-TARGET-PROBE-V2.tif")
     if func.output_exists(out_path.replace(".tif", "")):
         return False
@@ -383,7 +393,9 @@ def fuse_target_probe_v2(
                 tiled=True,
             )
 
-            out_path = os.path.join(c.DIRS["VIS_FUSED"], f"{out_name}-TARGET-PROBE-V2.tif")
+            out_path = os.path.join(
+                c.DIRS["VIS_FUSED"], f"{out_name}-TARGET-PROBE-V2.tif"
+            )
             with rio.open(out_path, "w", **profile) as dst:
                 for _, window in dst.block_windows(1):
                     dst_bounds = dst.window_bounds(window)
@@ -449,14 +461,16 @@ def fuse_target_probe_v2(
 
                     tci_data[3] = (final_alpha_norm * 255).astype(np.uint8)
                     for b in range(3):
-                        tci_data[b] = (tci_data[b].astype(float) * final_alpha_norm).astype(
-                            np.uint8
-                        )
+                        tci_data[b] = (
+                            tci_data[b].astype(float) * final_alpha_norm
+                        ).astype(np.uint8)
                     dst.write(tci_data, window=window)
 
             func.perf_logger.end_step()
             build_overviews_gdal(out_path)
-            meta.generate_sidecar(out_path, "FUSED-TARGET-PROBE-V2", "TARGET-PROBE-V2", effective_res=10.0)
+            meta.generate_sidecar(
+                out_path, "FUSED-TARGET-PROBE-V2", "TARGET-PROBE-V2", effective_res=10.0
+            )
             cog.convert_to_cog(out_path)
             return True
     except Exception as e:
@@ -472,9 +486,12 @@ def fuse_life_machine(
     paths = {"VH": vh_path, "TCI": tci_path, "NIRFC": nirfc_path}
     missing = [name for name, p in paths.items() if not os.path.exists(p)]
     if missing:
-        print(f"Skipping LIFE-MACHINE for {out_name}: Missing {', '.join(missing)} products", flush=True)
+        print(
+            f"Skipping LIFE-MACHINE for {out_name}: Missing {', '.join(missing)} products",
+            flush=True,
+        )
         return False
-        
+
     out_path = os.path.join(c.DIRS["VIS_FUSED"], f"{out_name}-LIFE-MACHINE.tif")
     if func.output_exists(out_path.replace(".tif", "")):
         return False
@@ -560,8 +577,12 @@ def fuse_life_machine(
                     ndvi = np.zeros_like(nir)
                     m = denom != 0
                     ndvi[m] = (nir[m] - red_band[m]) / denom[m]
-                    ndvi_scaled = np.clip((ndvi - 0.0) / 0.8 * 255, 0, 255).astype(np.uint8)
-                    context_blue = np.clip(blue_band * 1.2 + 20, 0, 255).astype(np.uint8)
+                    ndvi_scaled = np.clip((ndvi - 0.0) / 0.8 * 255, 0, 255).astype(
+                        np.uint8
+                    )
+                    context_blue = np.clip(blue_band * 1.2 + 20, 0, 255).astype(
+                        np.uint8
+                    )
 
                     win_geom_mask = geom_mask[
                         window.row_off : window.row_off + window.height,
@@ -577,8 +598,12 @@ def fuse_life_machine(
                     )
 
                     alpha_final = (alpha_norm * 255).astype(np.uint8)
-                    vh_boosted = (vh_boosted.astype(float) * alpha_norm).astype(np.uint8)
-                    ndvi_scaled = (ndvi_scaled.astype(float) * alpha_norm).astype(np.uint8)
+                    vh_boosted = (vh_boosted.astype(float) * alpha_norm).astype(
+                        np.uint8
+                    )
+                    ndvi_scaled = (ndvi_scaled.astype(float) * alpha_norm).astype(
+                        np.uint8
+                    )
                     context_blue = (context_blue.astype(float) * alpha_norm).astype(
                         np.uint8
                     )
@@ -591,7 +616,9 @@ def fuse_life_machine(
 
             func.perf_logger.end_step()
             build_overviews_gdal(out_path)
-            meta.generate_sidecar(out_path, "FUSED-LIFE-MACHINE", "LIFE-MACHINE", effective_res=10.0)
+            meta.generate_sidecar(
+                out_path, "FUSED-LIFE-MACHINE", "LIFE-MACHINE", effective_res=10.0
+            )
             cog.convert_to_cog(out_path)
             return True
     except Exception as e:
@@ -599,27 +626,31 @@ def fuse_life_machine(
         return False
 
 
-def run_correlation(fusion_processes: List[str] = ["RADAR-BURN", "LIFE-MACHINE", "TARGET-PROBE-V2"]) -> int:
+def run_correlation(
+    fusion_processes: List[str] = ["RADAR-BURN", "LIFE-MACHINE", "TARGET-PROBE-V2"]
+) -> int:
     """Main entry point for S1/S2 correlation. Returns count of created fusion products."""
     matches = find_overlaps()
     if not matches:
         return 0
-        
+
     created_count = 0
     print(f"Found {len(matches)} potential S1/S2 matches.", flush=True)
     for match in matches:
         vh_ana, tci_vis, s2_name, ndbi_ana, ndre_ana, nirfc_vis = get_processed_paths(
             match["s1"], match["s2"]
         )
-        
+
         if "RADAR-BURN" in fusion_processes:
             if fuse_radar_optical(vh_ana, tci_vis, s2_name, match["inter_geom"]):
                 created_count += 1
-        
+
         if "LIFE-MACHINE" in fusion_processes:
-            if fuse_life_machine(vh_ana, tci_vis, nirfc_vis, s2_name, match["inter_geom"]):
+            if fuse_life_machine(
+                vh_ana, tci_vis, nirfc_vis, s2_name, match["inter_geom"]
+            ):
                 created_count += 1
-            
+
         if "TARGET-PROBE-V2" in fusion_processes:
             if fuse_target_probe_v2(
                 vh_ana, ndbi_ana, ndre_ana, tci_vis, s2_name, match["inter_geom"]

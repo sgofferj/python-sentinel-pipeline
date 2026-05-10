@@ -519,26 +519,39 @@ def _render_internal(
             # Memory Safety: We use max 2 parallel finalizers if not overriden.
             # Each finalizer will use GDAL_NUM_THREADS=1 to avoid OOM spikes.
             max_finalizers = int(os.getenv("MAX_PARALLEL_FINALIZERS", "2"))
-            print(f"Finalizing {len(vis_output_paths)} products (Parallel: {max_finalizers})...", flush=True)
-            
+            print(
+                f"Finalizing {len(vis_output_paths)} products (Parallel: {max_finalizers})...",
+                flush=True,
+            )
+
             def finalize_product(path):
                 # Inside parallel task, we force GDAL to single-thread per process
                 # to stay within memory budget
                 os.environ["GDAL_NUM_THREADS"] = "1"
                 build_overviews_gdal(path)
                 p_type = path.split("/")[-2].upper()
-                eff_res = 20.0 if p_type in ["AP", "NDBI", "NDBI_CLEAN", "NDRE", "NBR", "CAMO"] else 10.0
-                meta.generate_sidecar(path, f"S2-{p_type}", f"S2-{p_type}", effective_res=eff_res)
+                eff_res = (
+                    20.0
+                    if p_type in ["AP", "NDBI", "NDBI_CLEAN", "NDRE", "NBR", "CAMO"]
+                    else 10.0
+                )
+                meta.generate_sidecar(
+                    path, f"S2-{p_type}", f"S2-{p_type}", effective_res=eff_res
+                )
                 cog.convert_to_cog(path)
 
-            with ThreadPoolExecutor(max_workers=min(len(vis_output_paths), max_finalizers)) as executor:
+            with ThreadPoolExecutor(
+                max_workers=min(len(vis_output_paths), max_finalizers)
+            ) as executor:
                 executor.map(finalize_product, vis_output_paths)
 
         legends.save_all_legends(c.DIRS["S1S2_LEGENDS"])
         gc.collect()
 
 
-def run_pipeline(ds_obj: gdal.Dataset, processes: List[str], fusion_processes: List[str] = []) -> None:
+def run_pipeline(
+    ds_obj: gdal.Dataset, processes: List[str], fusion_processes: List[str] = []
+) -> None:
     """Entry point for S2 pipeline."""
     product_uri = gdal.Info(ds_obj, format="json")["metadata"][""]["PRODUCT_URI"]
     utm = get_utm(product_uri)
@@ -556,13 +569,13 @@ def run_pipeline(ds_obj: gdal.Dataset, processes: List[str], fusion_processes: L
         "CAMO": ["NDVI", "NDRE"],
         "NBR": ["NBR"],
     }
-    
+
     # Track which analytics we actually need to produce
     needed_analytics = set()
     for p in processes:
         if p in s2_deps:
             needed_analytics.update(s2_deps[p])
-            
+
     # Add fusion dependencies for S2:
     if "TARGET-PROBE-V2" in fusion_processes:
         needed_analytics.update(["NDBI", "NDRE"])
@@ -580,7 +593,7 @@ def run_pipeline(ds_obj: gdal.Dataset, processes: List[str], fusion_processes: L
     ]:
         if p in processes:
             v_paths[p] = f"{c.DIRS[f'VIS_S2_{p}']}/{name}-{p}"
-        
+
         # Always produce analytic if it's in the 'needed' set or if explicitly requested
         if p in needed_analytics or p in processes:
             if f"ANA_S2_{p}" in c.DIRS:

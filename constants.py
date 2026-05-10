@@ -47,6 +47,7 @@ DIRS: Dict[str, str] = {
     "VIS_S2_CAMO": os.path.join(OUT_BASE, "visual/s2/camo"),
     "VIS_S2_AP": os.path.join(OUT_BASE, "visual/s2/ap"),
     "VIS_FUSED": os.path.join(OUT_BASE, "visual/fused"),
+    "VIS_ROI": os.path.join(OUT_BASE, "visual/roi"),
     # --- ANALYTIC (Float32 for Change Detection) ---
     "ANA_S1_VV": os.path.join(OUT_BASE, "analytic/s1/vv"),
     "ANA_S1_VH": os.path.join(OUT_BASE, "analytic/s1/vh"),

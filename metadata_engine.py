@@ -57,7 +57,10 @@ def _round_list(lst: Any, precision: int) -> Any:
 
 
 def generate_sidecar(
-    tif_path: str, product_type: str, legend_id: str, effective_res: Optional[float] = None
+    tif_path: str,
+    product_type: str,
+    legend_id: str,
+    effective_res: Optional[float] = None,
 ) -> None:
     """
     Generates a .json sidecar for a Visual TIF.
@@ -75,22 +78,21 @@ def generate_sidecar(
         # We downsample by factor of 10 (10m -> 100m) for footprint extraction.
         # This makes the vectorization 100x faster and reduces noise automatically.
         mask_band = src.count if src.count > 1 else 1
-        
+
         factor = 10
         new_height = max(1, src.height // factor)
         new_width = max(1, src.width // factor)
-        
+
         # Use 'mode' resampling to keep the mask clean
         mask = src.read(
-            mask_band, 
+            mask_band,
             out_shape=(new_height, new_width),
-            resampling=rio.enums.Resampling.mode
+            resampling=rio.enums.Resampling.mode,
         )
-        
+
         # Adjust transform for downsampled mask
         transform = src.transform * src.transform.scale(
-            (src.width / mask.shape[-1]),
-            (src.height / mask.shape[-2])
+            (src.width / mask.shape[-1]), (src.height / mask.shape[-2])
         )
 
         # Only pixels > 0 are valid data
@@ -112,13 +114,13 @@ def generate_sidecar(
         geoms = []
         for r in results:
             g = shape(r["geometry"])
-            # Area filter: ignore anything smaller than 4 hectares (40,000 m2) 
+            # Area filter: ignore anything smaller than 4 hectares (40,000 m2)
             # to keep the inventory really clean.
             if g.area > 40000:
                 geoms.append(g)
-        
+
         del mask_bit
-        
+
         if not geoms:
             # Fallback to bounds
             bounds = transform_bounds(src.crs, "EPSG:4326", *src.bounds)
@@ -132,27 +134,27 @@ def generate_sidecar(
             # Downsampled shapes are already much fewer, making union fast
             combined = unary_union(geoms)
             del geoms
-            
+
             # Use buffer(0) to clean up
             combined = combined.buffer(0)
-            
+
             # --- Robust Hole Filling ---
             # Removes all internal 'voids' (sensor noise, cloud shadows)
             # only from the SIDE-CAR metadata to keep JSON compact.
             combined = fill_holes(combined)
-            
+
             # Simplify with 40m tolerance
             combined = combined.simplify(40.0, preserve_topology=True)
-            
+
             # Extreme noise reduction: keep top 25 parts max
-            if combined.geom_type == 'MultiPolygon':
+            if combined.geom_type == "MultiPolygon":
                 parts = sorted(combined.geoms, key=lambda p: p.area, reverse=True)
                 combined = MultiPolygon(parts[:25]) if len(parts) > 1 else parts[0]
                 combined = combined.simplify(40.0, preserve_topology=True)
-            
+
             # Transform to EPSG:4326
             footprint_raw = transform_geom(src.crs, "EPSG:4326", mapping(combined))
-            
+
             # --- Round Coordinates ---
             # Shaves off 60-70% of JSON size by limiting precision to ~1.1m
             footprint = round_coordinates(footprint_raw, 5)
@@ -190,7 +192,9 @@ def generate_sidecar(
             "product": product_type,
             "acquisition_time": timestamp,
             "render_time": datetime.now().isoformat() + "Z",
-            "resolution": effective_res if effective_res is not None else round(src.res[0], 1),
+            "resolution": (
+                effective_res if effective_res is not None else round(src.res[0], 1)
+            ),
             "bounds": leaflet_bounds,
             "footprint": footprint,
             "legend_id": legend_id,
@@ -201,7 +205,10 @@ def generate_sidecar(
             json.dump(metadata, f, separators=(",", ":"))
 
     elapsed = time.time() - start_time
-    print(f"Sidecar generated in {elapsed:.2f}s: {os.path.basename(sidecar_path)}", flush=True)
+    print(
+        f"Sidecar generated in {elapsed:.2f}s: {os.path.basename(sidecar_path)}",
+        flush=True,
+    )
     gc.collect()
 
 

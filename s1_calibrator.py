@@ -65,7 +65,9 @@ class S1Calibrator:  # pylint: disable=too-few-public-methods
             os.path.join(self.calibration_dir, f"noise-s1?-iw-grd-{pol}-*.xml")
         )
         if not cal_files or not noise_files:
-            raise FileNotFoundError(f"Could not find XML components for polarization: {pol}")
+            raise FileNotFoundError(
+                f"Could not find XML components for polarization: {pol}"
+            )
         return cal_files[0], noise_files[0]
 
     def _get_subdataset_string(self, polarization: str) -> str:
@@ -82,9 +84,15 @@ class S1Calibrator:  # pylint: disable=too-few-public-methods
         vectors = []
         for vector_node in root.xpath("//calibrationVector"):
             line = int(vector_node.find("line").text)
-            pixel_indices = np.fromstring(vector_node.find("pixel").text, sep=" ", dtype=int)
-            sigma_nought = np.fromstring(vector_node.find("sigmaNought").text, sep=" ", dtype=float)
-            vectors.append({"line": line, "pixels": pixel_indices, "sigma": sigma_nought})
+            pixel_indices = np.fromstring(
+                vector_node.find("pixel").text, sep=" ", dtype=int
+            )
+            sigma_nought = np.fromstring(
+                vector_node.find("sigmaNought").text, sep=" ", dtype=float
+            )
+            vectors.append(
+                {"line": line, "pixels": pixel_indices, "sigma": sigma_nought}
+            )
         return vectors
 
     def _parse_noise_xml(self, noise_xml: str) -> List[Dict[str, Any]]:
@@ -96,7 +104,9 @@ class S1Calibrator:  # pylint: disable=too-few-public-methods
         for vector_node in noise_nodes:
             line_node = vector_node.find("line")
             pixel_node = vector_node.find("pixel")
-            noise_val_node = vector_node.find("noiseLut") or vector_node.find("noiseRangeLut")
+            noise_val_node = vector_node.find("noiseLut") or vector_node.find(
+                "noiseRangeLut"
+            )
             if (
                 line_node is not None
                 and pixel_node is not None
@@ -105,7 +115,9 @@ class S1Calibrator:  # pylint: disable=too-few-public-methods
                 line = int(line_node.text)
                 pixel_indices = np.fromstring(pixel_node.text, sep=" ", dtype=int)
                 noise_values = np.fromstring(noise_val_node.text, sep=" ", dtype=float)
-                vectors.append({"line": line, "pixels": pixel_indices, "noise": noise_values})
+                vectors.append(
+                    {"line": line, "pixels": pixel_indices, "noise": noise_values}
+                )
         return vectors
 
     # pylint: disable=too-many-arguments,too-many-locals,too-many-statements
@@ -128,49 +140,87 @@ class S1Calibrator:  # pylint: disable=too-few-public-methods
 
         # 1. Create the output file with proper metadata using GDAL Translate
         # This copies GCPs, CRS, etc. perfectly from the subdataset.
-        print(f"Initializing {os.path.basename(output_path)} with source metadata...", flush=True)
+        print(
+            f"Initializing {os.path.basename(output_path)} with source metadata...",
+            flush=True,
+        )
         gdal.Translate(
-            output_path, 
-            sds_string, 
+            output_path,
+            sds_string,
             outputType=gdal.GDT_Float32,
-            creationOptions=["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=YES", "BLOCKXSIZE=256", "BLOCKYSIZE=256"]
+            creationOptions=[
+                "TILED=YES",
+                "COMPRESS=DEFLATE",
+                "BIGTIFF=YES",
+                "BLOCKXSIZE=256",
+                "BLOCKYSIZE=256",
+            ],
         )
 
         with rio.open(output_path, "r+") as dst:
             width: int = dst.width
             height: int = dst.height
-            
+
             # --- INTERPOLATION PREP ---
             lines = np.array([v["line"] for v in cal_vectors])
-            
+
             if HAS_CUDA:
                 print("Using CUDA for LUT Interpolation and Calibration.", flush=True)
                 grid_vals_sigma = []
                 grid_vals_noise = []
                 for i, v in enumerate(cal_vectors):
-                    f_s = interp1d(v["pixels"], v["sigma"], kind="linear", fill_value="extrapolate")
+                    f_s = interp1d(
+                        v["pixels"], v["sigma"], kind="linear", fill_value="extrapolate"
+                    )
                     grid_vals_sigma.append(f_s(np.arange(width)))
-                    nv = next((n for n in noise_vectors if n["line"] == v["line"]), noise_vectors[min(i, len(noise_vectors)-1)])
-                    f_n = interp1d(nv["pixels"], nv["noise"], kind="linear", fill_value="extrapolate")
+                    nv = next(
+                        (n for n in noise_vectors if n["line"] == v["line"]),
+                        noise_vectors[min(i, len(noise_vectors) - 1)],
+                    )
+                    f_n = interp1d(
+                        nv["pixels"],
+                        nv["noise"],
+                        kind="linear",
+                        fill_value="extrapolate",
+                    )
                     grid_vals_noise.append(f_n(np.arange(width)))
-                
+
                 g_lines = cp.array(lines, dtype=cp.float32)
                 g_lut_sigma = cp.array(grid_vals_sigma, dtype=cp.float32)
                 g_lut_noise = cp.array(grid_vals_noise, dtype=cp.float32)
                 del grid_vals_sigma, grid_vals_noise
             else:
-                print("GPU Unavailble: Falling back to CPU for LUT Interpolation.", flush=True)
+                print(
+                    "GPU Unavailble: Falling back to CPU for LUT Interpolation.",
+                    flush=True,
+                )
                 grid_values_s = []
                 grid_values_n = []
                 for v in cal_vectors:
-                    f = interp1d(v["pixels"], v["sigma"], kind="linear", fill_value="extrapolate")
+                    f = interp1d(
+                        v["pixels"], v["sigma"], kind="linear", fill_value="extrapolate"
+                    )
                     grid_values_s.append(f(np.arange(width)))
                 for v in noise_vectors:
-                    f = interp1d(v["pixels"], v["noise"], kind="linear", fill_value="extrapolate")
+                    f = interp1d(
+                        v["pixels"], v["noise"], kind="linear", fill_value="extrapolate"
+                    )
                     grid_values_n.append(f(np.arange(width)))
-                
-                cal_func = interp1d(lines, np.array(grid_values_s), axis=0, kind="linear", fill_value="extrapolate")
-                noise_func = interp1d(np.array([v["line"] for v in noise_vectors]), np.array(grid_values_n), axis=0, kind="linear", fill_value="extrapolate")
+
+                cal_func = interp1d(
+                    lines,
+                    np.array(grid_values_s),
+                    axis=0,
+                    kind="linear",
+                    fill_value="extrapolate",
+                )
+                noise_func = interp1d(
+                    np.array([v["line"] for v in noise_vectors]),
+                    np.array(grid_values_n),
+                    axis=0,
+                    kind="linear",
+                    fill_value="extrapolate",
+                )
                 del grid_values_s, grid_values_n
 
             read_queue: queue.Queue = queue.Queue(maxsize=2)
@@ -184,12 +234,16 @@ class S1Calibrator:  # pylint: disable=too-few-public-methods
                             rows = min(block_size, height - row_off)
                             window = Window(0, row_off, width, rows)
                             dn = t_src.read(1, window=window).astype(np.float32)
-                            
+
                             if not HAS_CUDA:
                                 current_lines = np.arange(row_off, row_off + rows)
                                 cal_block = cal_func(current_lines).astype(np.float32)
-                                noise_block = noise_func(current_lines).astype(np.float32)
-                                read_queue.put((window, dn, cal_block, noise_block), timeout=120)
+                                noise_block = noise_func(current_lines).astype(
+                                    np.float32
+                                )
+                                read_queue.put(
+                                    (window, dn, cal_block, noise_block), timeout=120
+                                )
                             else:
                                 read_queue.put((window, dn, row_off, rows), timeout=120)
                         read_queue.put(None, timeout=120)
@@ -212,42 +266,54 @@ class S1Calibrator:  # pylint: disable=too-few-public-methods
 
             t_read = threading.Thread(target=reader_thread, daemon=True)
             t_write = threading.Thread(target=writer_thread, args=(dst,), daemon=True)
-            t_read.start(); t_write.start()
+            t_read.start()
+            t_write.start()
 
             while True:
                 try:
                     item = read_queue.get(timeout=120)
                 except queue.Empty:
-                    print("\nCRITICAL: Reader thread timed out (Deadlock?).", flush=True)
+                    print(
+                        "\nCRITICAL: Reader thread timed out (Deadlock?).", flush=True
+                    )
                     break
-                    
+
                 if item is None:
-                    write_queue.put(None, timeout=120); read_queue.task_done()
+                    write_queue.put(None, timeout=120)
+                    read_queue.task_done()
                     break
-                
+
                 try:
                     if HAS_CUDA:
                         window, dn, row_off, rows = item
                         m_pool = cp.get_default_memory_pool()
                         g_dn = cp.array(dn)
                         g_valid = g_dn > 0
-                        target_lines = cp.arange(row_off, row_off + rows, dtype=cp.float32)
-                        
+                        target_lines = cp.arange(
+                            row_off, row_off + rows, dtype=cp.float32
+                        )
+
                         def gpu_interp_2d(lut):
                             idx = cp.searchsorted(g_lines, target_lines) - 1
                             idx = cp.clip(idx, 0, len(lines) - 2)
-                            x0 = g_lines[idx]; x1 = g_lines[idx+1]
+                            x0 = g_lines[idx]
+                            x1 = g_lines[idx + 1]
                             weight = (target_lines - x0) / (x1 - x0)
-                            y0 = lut[idx]; y1 = lut[idx+1]
+                            y0 = lut[idx]
+                            y1 = lut[idx + 1]
                             return y0 + weight[:, cp.newaxis] * (y1 - y0)
 
                         g_cal = gpu_interp_2d(g_lut_sigma)
                         g_noise = gpu_interp_2d(g_lut_noise)
-                        
+
                         g_sigma0 = cp.zeros_like(g_dn)
                         # Ensure valid pixels are NEVER absolute 0 to preserve nodata=0 meaning
-                        g_sigma0[g_valid] = cp.maximum((cp.square(g_dn[g_valid]) - g_noise[g_valid]) / cp.square(g_cal[g_valid]), 1e-9)
-                        
+                        g_sigma0[g_valid] = cp.maximum(
+                            (cp.square(g_dn[g_valid]) - g_noise[g_valid])
+                            / cp.square(g_cal[g_valid]),
+                            1e-9,
+                        )
+
                         sigma0 = cp.asnumpy(g_sigma0)
                         del g_dn, g_valid, g_cal, g_noise, g_sigma0, target_lines
                         m_pool.free_all_blocks()
@@ -255,20 +321,31 @@ class S1Calibrator:  # pylint: disable=too-few-public-methods
                         window, dn, cal_block, noise_block = item
                         valid_mask = dn > 0
                         sigma0 = np.zeros_like(dn)
-                        sigma0[valid_mask] = np.maximum((np.square(dn[valid_mask]) - noise_block[valid_mask]) / np.square(cal_block[valid_mask]), 1e-9)
+                        sigma0[valid_mask] = np.maximum(
+                            (np.square(dn[valid_mask]) - noise_block[valid_mask])
+                            / np.square(cal_block[valid_mask]),
+                            1e-9,
+                        )
 
                     write_queue.put((window, sigma0), timeout=120)
                 except Exception as e:
                     print(f"\nCRITICAL: Calibration loop failed: {e}", flush=True)
                     break
-                
-                print(f"Processed strip starting at line {window.row_off}/{height}", end="\r", flush=True)
+
+                print(
+                    f"Processed strip starting at line {window.row_off}/{height}",
+                    end="\r",
+                    flush=True,
+                )
                 read_queue.task_done()
 
-            t_read.join(); t_write.join()
+            t_read.join()
+            t_write.join()
 
             if build_ov:
-                func.perf_logger.start_step(f"S1 Internal Overviews: {os.path.basename(output_path)}")
+                func.perf_logger.start_step(
+                    f"S1 Internal Overviews: {os.path.basename(output_path)}"
+                )
                 dst.build_overviews([2, 4, 8, 16, 32, 64], rio.enums.Resampling.average)
                 func.perf_logger.end_step()
 

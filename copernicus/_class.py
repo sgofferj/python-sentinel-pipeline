@@ -242,7 +242,9 @@ class connect:  # pylint: disable=invalid-name
         )
         return result.groups()[0] if result else None
 
-    def download(self, uuid: str, filename: str, directory: str = ".", retries: int = 3) -> bool:
+    def download(
+        self, uuid: str, filename: str, directory: str = ".", retries: int = 3
+    ) -> bool:
         """Downloads a dataset from Copernicus with retry logic."""
         url: str = (
             f"https://download.dataspace.copernicus.eu/odata/v1/Products({uuid})/$value"
@@ -251,7 +253,10 @@ class connect:  # pylint: disable=invalid-name
 
         for attempt in range(retries):
             try:
-                print(f"Downloading {filename} (Attempt {attempt + 1}/{retries})...", flush=True)
+                print(
+                    f"Downloading {filename} (Attempt {attempt + 1}/{retries})...",
+                    flush=True,
+                )
                 # Increase timeout for large file streams
                 r = req.get(url, headers=headers, stream=True, timeout=120)
                 r.raise_for_status()
@@ -267,8 +272,9 @@ class connect:  # pylint: disable=invalid-name
                     wait = (attempt + 1) * 10
                     print(f"Retrying in {wait}s...", flush=True)
                     import time
+
                     time.sleep(wait)
-                    self.refreshToken() # Refresh token just in case it expired during long wait
+                    self.refreshToken()  # Refresh token just in case it expired during long wait
                 else:
                     raise e
         return False

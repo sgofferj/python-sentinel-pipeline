@@ -203,10 +203,20 @@ def save_all_legends(output_dir):
             "NDRE", "Red-Edge", -0.1, 0.5, labels=["Sparse", "Healthy", "Vibrant"]
         ),
         "S2-NDBI": get_s2_index_legend(
-            "NDBI", "Building Index", -0.6, 0.3, "urban", labels=["Nature", "Suburban", "Built"]
+            "NDBI",
+            "Building Index",
+            -0.6,
+            0.3,
+            "urban",
+            labels=["Nature", "Suburban", "Built"],
         ),
         "S2-NDBI_CLEAN": get_s2_index_legend(
-            "NDBI_CLEAN", "OSINT Detect", -0.6, 0.2, "osint", labels=["Nature", "Possible", "Detect"]
+            "NDBI_CLEAN",
+            "OSINT Detect",
+            -0.6,
+            0.2,
+            "osint",
+            labels=["Nature", "Possible", "Detect"],
         ),
         "S2-NBR": get_s2_index_legend(
             "NBR", "Burn Ratio", -0.2, 0.5, labels=["Burned", "Regrow", "Healthy"]
