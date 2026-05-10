@@ -12,19 +12,17 @@
 """
 Predicts the next overflight of Sentinel satellites over specified search areas.
 Fetches TLEs from Celestrak and uses Skyfield for orbital propagation.
+Supports multiple bounding boxes and returns the earliest pass for each sensor type.
 """
 
 import os
-import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from skyfield.api import Topos, load, EarthSatellite
 import functions as func
 
 # NORAD IDs for active Sentinel satellites (as of 2026 estimate)
-# S1A: 39634, S1C: 62235 (launched Dec 2024)
-# S2A: 40697, S2B: 42063, S2C: 61005 (launched Sept 2024)
 SENTINELS = {
     "S1": {
         "Sentinel-1A": 39634,
@@ -37,10 +35,6 @@ SENTINELS = {
     },
 }
 
-TLE_URL = "https://celestrak.org/NORAD/elements/gp.php?GROUP=resource&FORMAT=tle"
-# Alternatively, use specific IDs:
-# https://celestrak.org/NORAD/elements/gp.php?CATNR=39634,62235,40697,42063,61005&FORMAT=tle
-
 
 def fetch_tles() -> Dict[int, List[str]]:
     """Fetches TLEs from Celestrak for Sentinels individually."""
@@ -51,8 +45,6 @@ def fetch_tles() -> Dict[int, List[str]]:
         ids.extend(sat_type.values())
 
     tles = {}
-    ts = load.timescale()
-
     for norad_id in ids:
         try:
             url = f"https://celestrak.org/NORAD/elements/gp.php?CATNR={norad_id}&FORMAT=tle"
@@ -73,21 +65,14 @@ def fetch_tles() -> Dict[int, List[str]]:
     return tles
 
 
-
-def get_next_overflight(
-    bbox_str: str, sat_ids: Dict[str, int], tles: Dict[int, List[str]]
+def get_earliest_overflight(
+    boxes: List[str], sat_ids: Dict[str, int], tles: Dict[int, List[str]]
 ) -> Optional[Dict[str, Any]]:
-    """Calculates the next overflight of any satellite in the group over the BBOX."""
-    if not bbox_str:
+    """Calculates the earliest overflight of any satellite in the group over ANY of the boxes."""
+    if not boxes:
         return None
 
     try:
-        west, south, east, north = map(float, bbox_str.split(","))
-        # Use the center of the BBOX as the observer point
-        center_lat = (south + north) / 2
-        center_lon = (west + east) / 2
-        observer = Topos(latitude_degrees=center_lat, longitude_degrees=center_lon)
-
         ts = load.timescale()
         now = datetime.now(timezone.utc)
         t0 = ts.from_datetime(now)
@@ -95,49 +80,49 @@ def get_next_overflight(
 
         best_pass = None
 
-        for name, norad_id in sat_ids.items():
-            if norad_id not in tles:
-                continue
+        for bbox_str in boxes:
+            west, south, east, north = map(float, bbox_str.split(","))
+            # Use the center of the BBOX as the observer point
+            center_lat = (south + north) / 2
+            center_lon = (west + east) / 2
+            observer = Topos(latitude_degrees=center_lat, longitude_degrees=center_lon)
 
-            sat_data = tles[norad_id]
-            satellite = EarthSatellite(sat_data[1], sat_data[2], sat_data[0], ts)
+            for name, norad_id in sat_ids.items():
+                if norad_id not in tles:
+                    continue
 
-            # Find passes over the observer
-            # altitude_degrees threshold: Sentinel footprint is roughly 250km wide (S1) or 290km (S2)
-            # Sentinel altitude is ~700-800km.
-            # Tan(theta) = (Width/2) / Altitude.
-            # For S2: 145 / 786 = ~0.18 -> theta = ~10.5 degrees.
-            # So a 80 degree elevation (90-10.5) is needed for center? No, elevation from horizon.
-            # 10.5 degrees from nadir means the satellite is visible at ~80 degrees elevation if it's perfectly passing over.
-            # Actually, to be in the footprint, it doesn't need to be 90 degrees.
-            # We use a conservative 30 degrees for "nearby" and 70+ for "likely overflight".
-            # Let's use 60 degrees as a threshold for "meaningful overflight" for narrow-swath optical.
-            t, events = satellite.find_events(observer, t0, t1, altitude_degrees=30.0)
+                sat_data = tles[norad_id]
+                satellite = EarthSatellite(sat_data[1], sat_data[2], sat_data[0], ts)
 
-            for ti, event in zip(t, events):
-                if event == 1:  # Peak of pass
-                    pass_time = ti.utc_datetime().replace(tzinfo=timezone.utc)
-                    if best_pass is None or pass_time < best_pass["raw_time"]:
-                        best_pass = {
-                            "satellite": name,
-                            "raw_time": pass_time,
-                        }
+                # Find passes over the observer
+                # altitude_degrees threshold: 30.0 for general proximity
+                t, events = satellite.find_events(
+                    observer, t0, t1, altitude_degrees=30.0
+                )
+
+                for ti, event in zip(t, events):
+                    if event == 1:  # Peak of pass
+                        pass_time = ti.utc_datetime().replace(tzinfo=timezone.utc)
+                        if best_pass is None or pass_time < best_pass["raw_time"]:
+                            best_pass = {
+                                "satellite": name,
+                                "raw_time": pass_time,
+                                "bbox": bbox_str,
+                            }
 
         if best_pass:
-            # Convert to final output format
-            result = {
+            return {
                 "satellite": best_pass["satellite"],
                 "time": best_pass["raw_time"].strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
-            return result
     except Exception as e:
-        print(f"Error predicting overflight for {bbox_str}: {e}", flush=True)
+        print(f"Error predicting overflight: {e}", flush=True)
 
     return None
 
 
 def predict_all() -> Dict[str, Any]:
-    """Predicts next overflights for both S1 and S2."""
+    """Predicts next overflights for both S1 and S2 constellations across all search areas."""
     tles = fetch_tles()
     if not tles:
         return {}
@@ -149,14 +134,12 @@ def predict_all() -> Dict[str, Any]:
     results = {}
 
     if s1_boxes:
-        # For simplicity, we take the first box or the "most important" one.
-        # Usually users have one main area.
-        res = get_next_overflight(s1_boxes[0], SENTINELS["S1"], tles)
+        res = get_earliest_overflight(s1_boxes, SENTINELS["S1"], tles)
         if res:
             results["S1"] = res
 
     if s2_boxes:
-        res = get_next_overflight(s2_boxes[0], SENTINELS["S2"], tles)
+        res = get_earliest_overflight(s2_boxes, SENTINELS["S2"], tles)
         if res:
             results["S2"] = res
 
