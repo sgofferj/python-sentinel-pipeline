@@ -40,7 +40,7 @@ def rebuild_inventory() -> None:
                 try:
                     with open(json_path, "r", encoding="utf-8") as f:
                         meta: Dict[str, Any] = json.load(f)
-                        
+
                         tif_path: str = json_path.replace(".json", ".tif")
                         if not os.path.exists(tif_path):
                             continue

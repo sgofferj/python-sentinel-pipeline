@@ -19,7 +19,7 @@ import subprocess
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import psutil
@@ -254,7 +254,7 @@ def get_boxes(boxes: Optional[str]) -> List[str]:
     """Parses a box string, a semicolon-separated list of boxes, or a JSON list into a Python list."""
     if not boxes:
         return []
-    
+
     # Try JSON parsing first
     try:
         result = json.loads(boxes)
@@ -274,7 +274,7 @@ def this_moment() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def yesterday(frmt: str = "%Y-%m-%d", is_string: bool = True) -> Union[str, datetime]:
+def yesterday(frmt: str = "%Y-%m-%d", is_string: bool = True) -> Any:
     """Returns yesterday's date."""
     yest = datetime.now() - timedelta(1)
     return yest.strftime(frmt) if is_string else yest

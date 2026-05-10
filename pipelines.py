@@ -18,7 +18,6 @@ Now honors processed-file logging only after successful handling.
 
 import argparse
 import os
-import re
 import time
 import zipfile
 from typing import Any, Dict, List, Optional
@@ -36,6 +35,7 @@ from correlate import run_correlation
 import search
 import cleanup
 import notifications
+import roi_manager
 
 load_dotenv()
 
@@ -228,8 +228,9 @@ if __name__ == "__main__":
         print("S2 Processing phase complete.", flush=True)
 
     # 4. Finalization (Fusion & Inventory)
-    should_finalize = processed_s1 or processed_s2
+    should_finalize = bool(processed_s1 or processed_s2)
     fusion_count = 0
+    roi_count = 0
     if args.downloaded and (s1_ready or s2_ready):
         should_finalize = True
 
@@ -239,6 +240,8 @@ if __name__ == "__main__":
             fusion_count = run_correlation(FUSION_PROCESSES)
 
         inventory_manager.rebuild_inventory()
+        # ROI Stage
+        roi_count = roi_manager.run_roi_stage()
     else:
         print("\nNothing new to finalize.", flush=True)
 
@@ -257,6 +260,8 @@ if __name__ == "__main__":
     msg += f"Processed: {len(processed_s1)} S1, {len(processed_s2)} S2"
     if fusion_count > 0:
         msg += f", {fusion_count} Fusion"
+    if roi_count > 0:
+        msg += f", {roi_count} ROI"
     msg += " products."
 
     if should_finalize:

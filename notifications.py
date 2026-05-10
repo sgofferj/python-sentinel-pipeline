@@ -16,6 +16,7 @@ Notification module for the Sentinel pipeline using Apprise.
 import os
 import apprise
 
+
 def send_notification(message: str, title: str = "Sentinel Pipeline") -> None:
     """Sends a notification via Apprise if APPRISE_URLS is set."""
     urls = os.getenv("APPRISE_URLS")
@@ -23,9 +24,9 @@ def send_notification(message: str, title: str = "Sentinel Pipeline") -> None:
         return
 
     apobj = apprise.Apprise()
-    
+
     # Split by comma or space if multiple URLs are provided
-    for url in urls.replace(',', ' ').split():
+    for url in urls.replace(",", " ").split():
         if url.strip():
             apobj.add(url.strip())
 

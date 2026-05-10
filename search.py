@@ -49,29 +49,32 @@ def update_last_run(sat: str, processed_files: List[Dict[str, Any]]) -> None:
     """
     if not USE_LOG:
         return
-        
+
     existing_log = load_log(sat) or {"time": "", "files": []}
     existing_files = existing_log.get("files", [])
     existing_ids = {f["id"] for f in existing_files if "id" in f}
-    
+
     # Only add truly new files to the log
     new_entries = []
     for f in processed_files:
         if f.get("id") not in existing_ids:
             new_entries.append(f)
-            
+
     combined_files = existing_files + new_entries
-    
+
     log_data: Dict[str, Any] = {
         "time": func.this_moment(),
         "files": combined_files,
     }
-    
+
     log_path: str = os.path.join(c.DIRS["DL"], f"{sat}_last.json")
-    with open(log_path, "w", encoding="utf-8") as f:
-        json.dump(log_data, f, indent=4)
-        
-    print(f"Updated {sat} log: added {len(new_entries)} new files (Total handled: {len(combined_files)}).", flush=True)
+    with open(log_path, "w", encoding="utf-8") as f_out:
+        json.dump(log_data, f_out, indent=4)
+
+    print(
+        f"Updated {sat} log: added {len(new_entries)} new files (Total handled: {len(combined_files)}).",
+        flush=True,
+    )
 
 
 def search_s1(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
@@ -97,7 +100,9 @@ def search_s1(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
                 start_date = log.get("time", start_date)
             last_ids = [f["id"] for f in log.get("files", []) if "id" in f]
 
-    print(f"Searching S1 ({product_type}/{sensor_mode}) from {start_date}...", flush=True)
+    print(
+        f"Searching S1 ({product_type}/{sensor_mode}) from {start_date}...", flush=True
+    )
 
     for box in boxes:
         status, result = mycop.productSearch(
@@ -123,7 +128,10 @@ def search_s1(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
                     num_files += 1
             search_result[box] = box_files
 
-    print(f"Search complete. Found {num_files} unique new products across {len(boxes)} areas.", flush=True)
+    print(
+        f"Search complete. Found {num_files} unique new products across {len(boxes)} areas.",
+        flush=True,
+    )
     return num_files, search_result
 
 
@@ -149,7 +157,10 @@ def search_s2(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
                 start_date = log.get("time", start_date)
             last_ids = [f["id"] for f in log.get("files", []) if "id" in f]
 
-    print(f"Searching S2 ({product_type}, Cloud < {cloud_cover}%) from {start_date}...", flush=True)
+    print(
+        f"Searching S2 ({product_type}, Cloud < {cloud_cover}%) from {start_date}...",
+        flush=True,
+    )
 
     for box in boxes:
         status, result = mycop.productSearch(
@@ -175,5 +186,8 @@ def search_s2(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
                     num_files += 1
             search_result[box] = box_files
 
-    print(f"S2 search complete. Found {num_files} unique new products across {len(boxes)} areas.", flush=True)
+    print(
+        f"S2 search complete. Found {num_files} unique new products across {len(boxes)} areas.",
+        flush=True,
+    )
     return num_files, search_result
