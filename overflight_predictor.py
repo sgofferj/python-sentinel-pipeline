@@ -43,34 +43,35 @@ TLE_URL = "https://celestrak.org/NORAD/elements/gp.php?GROUP=resource&FORMAT=tle
 
 
 def fetch_tles() -> Dict[int, List[str]]:
-    """Fetches TLEs from Celestrak."""
-    try:
-        ts = load.timescale()
-        # We can't easily use skyfield's load.tle_file directly for specific filtered IDs from Celestrak
-        # easily without saving to a file, so we'll just download and parse.
-        import requests
+    """Fetches TLEs from Celestrak for Sentinels individually."""
+    import requests
 
-        ids: List[int] = []
-        for sat_type in SENTINELS.values():
-            ids.extend(sat_type.values())
+    ids: List[int] = []
+    for sat_type in SENTINELS.values():
+        ids.extend(sat_type.values())
 
+    tles = {}
+    ts = load.timescale()
 
-        url = f"https://celestrak.org/NORAD/elements/gp.php?CATNR={','.join(map(str, ids))}&FORMAT=tle"
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
+    for norad_id in ids:
+        try:
+            url = f"https://celestrak.org/NORAD/elements/gp.php?CATNR={norad_id}&FORMAT=tle"
+            response = requests.get(url, timeout=20)
+            response.raise_for_status()
 
-        lines = response.text.strip().splitlines()
-        tles = {}
-        for i in range(0, len(lines), 3):
-            name = lines[i].strip()
-            line1 = lines[i + 1]
-            line2 = lines[i + 2]
-            norad_id = int(line2[2:7])
-            tles[norad_id] = [name, line1, line2]
-        return tles
-    except Exception as e:
-        print(f"Error fetching TLEs: {e}", flush=True)
-        return {}
+            lines = response.text.strip().splitlines()
+            if len(lines) >= 3:
+                name = lines[0].strip()
+                line1 = lines[1]
+                line2 = lines[2]
+                tles[norad_id] = [name, line1, line2]
+            else:
+                print(f"Warning: Malformed TLE response for {norad_id}", flush=True)
+        except Exception as e:
+            print(f"Error fetching TLE for {norad_id}: {e}", flush=True)
+
+    return tles
+
 
 
 def get_next_overflight(
