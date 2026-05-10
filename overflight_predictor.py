@@ -12,10 +12,11 @@
 """
 Predicts the next overflight of Sentinel satellites over specified search areas.
 Fetches TLEs from Celestrak and uses Skyfield for orbital propagation.
-Supports multiple bounding boxes and returns the earliest pass for each sensor type.
+Supports multiple bounding boxes and attempts to label them using .env variable names.
 """
 
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -34,6 +35,56 @@ SENTINELS = {
         "Sentinel-2C": 61005,
     },
 }
+
+
+def get_env_mapping() -> Dict[str, str]:
+    """Reads .env to map coordinate strings back to their variable names (e.g. 'gulf')."""
+    mapping: Dict[str, str] = {}
+    env_path = os.path.join(os.getcwd(), ".env")
+    if not os.path.exists(env_path):
+        return mapping
+
+    try:
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, val = line.split("=", 1)
+                    key = key.strip()
+                    val = val.strip().strip('"').strip("'")
+                    # If it looks like coordinates, store it
+                    if re.match(
+                        r"^-?\d+\.?\d*,-?\d+\.?\d*,-?\d+\.?\d*,-?\d+\.?\d*$", val
+                    ):
+                        # Use lowercase suffix of variable name as label
+                        label = key.replace("BOX_", "").lower()
+                        mapping[val] = label
+    except Exception:
+        pass
+    return mapping
+
+
+def resolve_box(box_str: str) -> str:
+    """Manually resolves ${VAR} references if load_dotenv failed to expand them."""
+    if not box_str.startswith("${") or not box_str.endswith("}"):
+        return box_str
+
+    var_name = box_str[2:-1]
+    val = os.getenv(var_name)
+    if val:
+        return val.strip().strip('"').strip("'")
+
+    # Fallback: search .env directly
+    env_path = os.path.join(os.getcwd(), ".env")
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip().startswith(var_name):
+                    _, v = line.split("=", 1)
+                    return v.strip().strip('"').strip("'")
+    return box_str
 
 
 def fetch_tles() -> Dict[int, List[str]]:
@@ -57,97 +108,106 @@ def fetch_tles() -> Dict[int, List[str]]:
                 line1 = lines[1]
                 line2 = lines[2]
                 tles[norad_id] = [name, line1, line2]
-            else:
-                print(f"Warning: Malformed TLE response for {norad_id}", flush=True)
-        except Exception as e:
-            print(f"Error fetching TLE for {norad_id}: {e}", flush=True)
+        except Exception:
+            pass
 
     return tles
 
 
-def get_earliest_overflight(
-    boxes: List[str], sat_ids: Dict[str, int], tles: Dict[int, List[str]]
+def get_next_pass(
+    bbox_str: str, sat_ids: Dict[str, int], tles: Dict[int, List[str]]
 ) -> Optional[Dict[str, Any]]:
-    """Calculates the earliest overflight of any satellite in the group over ANY of the boxes."""
-    if not boxes:
-        return None
-
+    """Calculates the next overflight of any satellite in the group over a SINGLE box."""
     try:
+        west, south, east, north = map(float, bbox_str.split(","))
+        center_lat = (south + north) / 2
+        center_lon = (west + east) / 2
+        observer = Topos(latitude_degrees=center_lat, longitude_degrees=center_lon)
+
         ts = load.timescale()
         now = datetime.now(timezone.utc)
         t0 = ts.from_datetime(now)
-        t1 = ts.from_datetime(now + timedelta(days=5))  # Look 5 days ahead
+        t1 = ts.from_datetime(now + timedelta(days=5))
 
         best_pass = None
 
-        for bbox_str in boxes:
-            west, south, east, north = map(float, bbox_str.split(","))
-            # Use the center of the BBOX as the observer point
-            center_lat = (south + north) / 2
-            center_lon = (west + east) / 2
-            observer = Topos(latitude_degrees=center_lat, longitude_degrees=center_lon)
+        for name, norad_id in sat_ids.items():
+            if norad_id not in tles:
+                continue
 
-            for name, norad_id in sat_ids.items():
-                if norad_id not in tles:
-                    continue
+            sat_data = tles[norad_id]
+            satellite = EarthSatellite(sat_data[1], sat_data[2], sat_data[0], ts)
+            t, events = satellite.find_events(observer, t0, t1, altitude_degrees=30.0)
 
-                sat_data = tles[norad_id]
-                satellite = EarthSatellite(sat_data[1], sat_data[2], sat_data[0], ts)
-
-                # Find passes over the observer
-                # altitude_degrees threshold: 30.0 for general proximity
-                t, events = satellite.find_events(
-                    observer, t0, t1, altitude_degrees=30.0
-                )
-
-                for ti, event in zip(t, events):
-                    if event == 1:  # Peak of pass
-                        pass_time = ti.utc_datetime().replace(tzinfo=timezone.utc)
-                        if best_pass is None or pass_time < best_pass["raw_time"]:
-                            best_pass = {
-                                "satellite": name,
-                                "raw_time": pass_time,
-                                "bbox": bbox_str,
-                            }
+            for ti, event in zip(t, events):
+                if event == 1:  # Peak of pass
+                    pass_time = ti.utc_datetime().replace(tzinfo=timezone.utc)
+                    if best_pass is None or pass_time < best_pass["raw_time"]:
+                        best_pass = {
+                            "satellite": name,
+                            "raw_time": pass_time,
+                        }
 
         if best_pass:
             return {
                 "satellite": best_pass["satellite"],
                 "time": best_pass["raw_time"].strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "raw_time": best_pass["raw_time"],
             }
-    except Exception as e:
-        print(f"Error predicting overflight: {e}", flush=True)
-
+    except Exception:
+        pass
     return None
 
 
-def predict_all() -> Dict[str, Any]:
-    """Predicts next overflights for both S1 and S2 constellations across all search areas."""
+def predict_all() -> List[Dict[str, Any]]:
+    """Predicts next overflights for all areas and satellites."""
     tles = fetch_tles()
     if not tles:
-        return {}
+        return []
 
-    # Load boxes from environment
-    s1_boxes = func.get_boxes(os.getenv("S1_BOX"))
-    s2_boxes = func.get_boxes(os.getenv("S2_BOX"))
+    coord_to_label = get_env_mapping()
 
-    results = {}
+    s1_raw = os.getenv("S1_BOX", "")
+    s2_raw = os.getenv("S2_BOX", "")
 
-    if s1_boxes:
-        res = get_earliest_overflight(s1_boxes, SENTINELS["S1"], tles)
-        if res:
-            results["S1"] = res
+    # Split by semicolon and resolve each
+    s1_items = [item.strip() for item in s1_raw.split(";") if item.strip()]
+    s2_items = [item.strip() for item in s2_raw.split(";") if item.strip()]
 
-    if s2_boxes:
-        res = get_earliest_overflight(s2_boxes, SENTINELS["S2"], tles)
-        if res:
-            results["S2"] = res
+    all_predictions = []
 
-    return results
+    for mission, items, sat_group in [
+        ("S1", s1_items, SENTINELS["S1"]),
+        ("S2", s2_items, SENTINELS["S2"]),
+    ]:
+        for item in items:
+            resolved = resolve_box(item)
+            res = get_next_pass(resolved, sat_group, tles)
+            if res:
+                label = coord_to_label.get(resolved, "")
+                suffix = f" ({label})" if label else ""
+                all_predictions.append(
+                    {
+                        "label": f"{mission}{suffix}",
+                        "time": res["time"],
+                        "raw_time": res["raw_time"],
+                    }
+                )
+
+    # Sort all by time
+    all_predictions.sort(key=lambda x: x["raw_time"])
+
+    # Clean up raw_time before returning
+    for p in all_predictions:
+        del p["raw_time"]
+
+    return all_predictions
 
 
 if __name__ == "__main__":
     from dotenv import load_dotenv
 
     load_dotenv()
-    print(predict_all())
+    import json
+
+    print(json.dumps(predict_all(), indent=2))

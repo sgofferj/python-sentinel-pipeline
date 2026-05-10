@@ -139,17 +139,14 @@ function updateAcquisitionRange(layers) {
 
 function updateNextOverflight(overflights) {
     const nextEl = document.getElementById('next-overflight');
-    if (!nextEl || !overflights) return;
+    if (!nextEl || !overflights || !Array.isArray(overflights)) return;
 
-    let text = "";
-    if (overflights.S2) {
-        text += `Seuraava S2: ${overflights.S2.time}`;
-    }
-    if (overflights.S1) {
-        if (text) text += "<br>";
-        text += `Seuraava S1: ${overflights.S1.time}`;
-    }
-    nextEl.innerHTML = text;
+    let html = "";
+    overflights.forEach(p => {
+        if (html) html += "<br>";
+        html += `Seuraava ${p.label}: ${p.time}`;
+    });
+    nextEl.innerHTML = html;
 }
 
 function updateGroupMarkers() {
