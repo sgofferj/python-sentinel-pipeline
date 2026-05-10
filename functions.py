@@ -250,23 +250,60 @@ def strtobool(val: str) -> int:
     raise ValueError(f"invalid truth value {val!r}")
 
 
+def resolve_env_variable(val: str) -> str:
+    """Manually resolves ${VAR} references if load_dotenv failed to expand them."""
+    if not val or not isinstance(val, str):
+        return val
+    if not val.startswith("${") or not val.endswith("}"):
+        return val
+
+    var_name = val[2:-1]
+    expanded = os.getenv(var_name)
+    if expanded:
+        return expanded.strip().strip('"').strip("'")
+
+    # Fallback: search .env directly in current working directory
+    env_path = os.path.join(os.getcwd(), ".env")
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith(var_name + "=") or line.startswith(
+                        var_name + " ="
+                    ):
+                        _, v = line.split("=", 1)
+                        return v.strip().strip('"').strip("'")
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass
+    return val
+
+
 def get_boxes(boxes: Optional[str]) -> List[str]:
-    """Parses a box string, a semicolon-separated list of boxes, or a JSON list into a Python list."""
+    """Parses a box string, a semicolon-separated list of boxes, or a JSON list into a Python list.
+    Also handles manual resolution of ${VAR} references.
+    """
     if not boxes:
         return []
 
+    raw_list: List[str] = []
     # Try JSON parsing first
     try:
         result = json.loads(boxes)
         if isinstance(result, list):
-            return [str(x).strip() for x in result]
-        return [str(result).strip()]
+            raw_list = [str(x).strip() for x in result]
+        else:
+            raw_list = [str(result).strip()]
     except (json.JSONDecodeError, TypeError):
         # If not JSON, try splitting by semicolon
         if ";" in boxes:
-            return [x.strip() for x in boxes.split(";")]
+            raw_list = [x.strip() for x in boxes.split(";")]
         # Otherwise treat as a single box
-        return [boxes.strip()]
+        else:
+            raw_list = [boxes.strip()]
+
+    # Resolve each item
+    return [resolve_env_variable(item) for item in raw_list]
 
 
 def this_moment() -> str:
