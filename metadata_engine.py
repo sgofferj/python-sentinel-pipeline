@@ -74,7 +74,8 @@ def generate_sidecar(
     sidecar_path: str = tif_path.replace(".tif", ".json")
     start_time = time.time()
 
-    with rio.open(tif_path) as src:
+    try:
+        with rio.open(tif_path) as src:
         # 1. Calculate footprint from Alpha channel (usually last band)
         # We downsample by factor of 10 (10m -> 100m) for footprint extraction.
         # This makes the vectorization 100x faster and reduces noise automatically.
@@ -208,11 +209,14 @@ def generate_sidecar(
         with open(sidecar_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, separators=(",", ":"))
 
-    elapsed = time.time() - start_time
-    print(
-        f"Sidecar generated in {elapsed:.2f}s: {os.path.basename(sidecar_path)}",
-        flush=True,
-    )
+        elapsed = time.time() - start_time
+        print(
+            f"Sidecar generated in {elapsed:.2f}s: {os.path.basename(sidecar_path)}",
+            flush=True,
+        )
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        print(f"Error processing {os.path.basename(tif_path)}: {e}", flush=True)
+
     gc.collect()
 
 

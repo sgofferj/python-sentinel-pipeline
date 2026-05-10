@@ -94,9 +94,9 @@ def rebuild_all():
                         tif_path, product_id, legend_id, effective_res=eff_res
                     )
                     count += 1
-                except (ValueError, IndexError) as e:
+                except Exception as e:  # pylint: disable=broad-exception-caught
                     print(
-                        f"Skipping {file}: Could not determine product type from path. {e}",
+                        f"ERROR regenerating sidecar for {file}: {e}",
                         flush=True,
                     )
 
