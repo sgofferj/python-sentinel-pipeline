@@ -176,7 +176,8 @@ def run_roi_stage(process_all: bool = False) -> int:
 
         for roi in rois:
             roi_name = roi.get("name", "ROI")
-            roi_bbox = roi.get("bbox", "")
+            roi_bbox_raw = roi.get("bbox", "")
+            roi_bbox = func.resolve_env_variable(roi_bbox_raw)
             roi_match_threshold = roi.get("bbox_match", 0)
             desired_products = roi.get("products", [])
 
