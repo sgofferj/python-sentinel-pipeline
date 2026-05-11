@@ -41,6 +41,35 @@ body {
     color: #aaa;
 }
 
+.lang-picker {
+    display: flex;
+    gap: 5px;
+    margin-bottom: 5px;
+    justify-content: flex-end;
+}
+
+.lang-btn {
+    background: #444;
+    border: 1px solid #555;
+    color: #888;
+    padding: 3px 6px;
+    font-size: 0.65rem;
+    cursor: pointer;
+    border-radius: 3px;
+    transition: all 0.2s;
+    font-weight: bold;
+}
+
+.lang-btn:hover {
+    background: #555;
+}
+
+.lang-btn.active {
+    color: #fff;
+    border-color: #ffeb3b;
+    background: #3d3d3d;
+}
+
 .action-row {
     display: flex;
     gap: 8px;

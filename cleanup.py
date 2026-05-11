@@ -201,7 +201,10 @@ def remove_product_files(dir_path: str, base_name: str, dry_run: bool = True) ->
 
 
 def cleanup_outputs(products: List[Dict[str, Any]], dry_run: bool = True) -> None:
-    """Removes all output files (visual only - analytic handled separately) for outdated products."""
+    """
+    Removes all output files (visual only - analytic handled separately)
+    for outdated products.
+    """
     action = "Dry-run: Checking" if dry_run else "Cleaning up"
     print(
         f"{action} {len(products)} outdated products from visual output directories...",
@@ -331,6 +334,51 @@ def cleanup_logs(products: List[Dict[str, Any]], dry_run: bool = True) -> None:
                 print(f"Updated {sat}_last.json: removed {diff} entries.", flush=True)
 
 
+def cleanup_roi_outputs(days: int, dry_run: bool = True) -> None:
+    """Removes outdated ROI crops and social media images."""
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
+    action = "Dry-run: Checking" if dry_run else "Cleaning up"
+    print(
+        f"{action} ROI outputs older than {days} days...",
+        flush=True,
+    )
+
+    roi_root = c.DIRS["VIS_ROI"]
+    if not os.path.exists(roi_root):
+        return
+
+    removed_count = 0
+    for filename in os.listdir(roi_root):
+        # Format: ROI_Name_Product_YYYY-MM-DDTHHMMSSZ.tif
+        # Or: ROI_Name_Product_YYYY-MM-DDTHHMMSSZ_social.jpg
+        match = re.search(r"_(\d{4}-\d{2}-\d{2}T\d{6})Z", filename)
+        if not match:
+            continue
+
+        time_str = match.group(1)
+        try:
+            acq_time = datetime.strptime(time_str, "%Y-%m-%dT%H%M%S").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            continue
+
+        if acq_time < cutoff_date:
+            file_path = os.path.join(roi_root, filename)
+            if dry_run:
+                print(f"[DRY-RUN] Would remove ROI file: {file_path}", flush=True)
+                removed_count += 1
+            else:
+                try:
+                    os.remove(file_path)
+                    removed_count += 1
+                except OSError as e:
+                    print(f"Error removing {file_path}: {e}", flush=True)
+
+    count_label = "Would remove" if dry_run else "Removed"
+    print(f"{count_label} {removed_count} ROI files.", flush=True)
+
+
 def run_cleanup(days: int = 30, dry_run: bool = True) -> None:
     """External entry point for cleanup function."""
     mode = "DRY-RUN" if dry_run else "LIVE (FORCE)"
@@ -345,6 +393,7 @@ def run_cleanup(days: int = 30, dry_run: bool = True) -> None:
         print("No outdated products found.", flush=True)
     else:
         cleanup_outputs(outdated_products_list, dry_run)
+        cleanup_roi_outputs(days, dry_run)
         cleanup_source_data(outdated_products_list, dry_run)
         cleanup_logs(outdated_products_list, dry_run)
 

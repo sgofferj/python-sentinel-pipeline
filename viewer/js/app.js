@@ -9,6 +9,40 @@ const INVENTORY_URL = IMAGE_BASE_URL + "visual/inventory.json";
 const LEGENDS_URL = IMAGE_BASE_URL + "legends/legends.json";
 const CONFIG_URL = "config.json";
 
+// --- LANGUAGE ---
+let currentLang = localStorage.getItem('viewer_lang') || 'fi';
+
+function setLanguage(lang) {
+    if (!UI_TRANSLATIONS[lang]) return;
+    currentLang = lang;
+    localStorage.setItem('viewer_lang', lang);
+    
+    // Update UI
+    translateUI();
+    initBasePicker(); // Re-init base picker to update labels
+    if (inventoryData.length > 0) {
+        renderLayerPicker(inventoryData);
+        updateAcquisitionRange(inventoryData);
+    }
+    
+    // Update active lang button
+    document.querySelectorAll('.lang-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.id === `lang-${lang}`);
+    });
+}
+
+function translateUI() {
+    const t = UI_TRANSLATIONS[currentLang];
+    document.querySelectorAll('[data-i18n]').forEach(el => {
+        const key = el.getAttribute('data-i18n');
+        if (t[key]) el.innerText = t[key];
+    });
+    document.querySelectorAll('[data-i18n-title]').forEach(el => {
+        const key = el.getAttribute('data-i18n-title');
+        if (t[key]) el.title = t[key];
+    });
+}
+
 // --- LAYER ORDERING (Z-Indices) ---
 // Satellite imagery uses timestamp / 100000 (currently ~17 million).
 // UI and Overlays must be significantly higher to stay on top.
@@ -16,36 +50,15 @@ const Z_INDEX_IDENTIFY = 100000000; // 100M
 const Z_INDEX_HIGHLIGHT = 110000000; // 110M
 const Z_INDEX_OVERLAYS = 200000000; // 200M
 
-// --- UI DICTIONARY ---
-const TRANSLATIONS = {
-    "S1": { title: "SAR tutka", subtitle: "(ESA Sentinel 1)" },
-    "S2": { title: "Optinen", subtitle: "(ESA Sentinel 2)" },
-    "FUSED": { title: "Sensorifuusio", subtitle: "(S1 + S2 yhdistelmäkuvat)" },
-    "VV": { title: "VV-polarisaatio", subtitle: "(Pystysuora lähetys ja vastaanotto)" },
-    "VH": { title: "VH-polarisaatio", subtitle: "(Pysty-vaaka ristiinpolarisaatio)" },
-    "RATIO": { title: "VV/VH-suhde", subtitle: "" },
-    "AP": { title: "Ilmakehän läpäisy", subtitle: "(SWIR-väriyhdistelmä)" },
-    "NDBI": { title: "NDBI-indeksi", subtitle: "(Rakennetun ympäristön indeksi)" },
-    "NDBI_CLEAN": { title: "NDBI_CLEAN", subtitle: "(Häiriösuodatettu rakennetun ympäristön indeksi)" },
-    "NDRE": { title: "NDRE-indeksi", subtitle: "(Kasvillisuuden punaisen reunan indeksi)" },
-    "NDVI": { title: "NDVI-indeksi", subtitle: "(Normalisoitu kasvillisuusindeksi)" },
-    "NIRFC": { title: "NIR-värivääräkuva", subtitle: "(Lähi-infrapunakooste)" },
-    "TCI": { title: "TCI-kuva", subtitle: "(Luonnollisen värin kuva / Tosivärikuva)" },
-    "NBR": { title: "NBR-indeksi", subtitle: "(Normalisoitu paloindeksi tai Paloalueindeksi)" },
-    "LIFE-MACHINE": { title: "LIFE-MACHINE", subtitle: "(Biomassan ja keinotekoisten rakenteiden erottelu)" },
-    "RADAR-BURN": { title: "RADAR-BURN", subtitle: "(Tutkaheijastumat optisen kuvan päällä)" },
-    "TARGET-PROBE-V2": { title: "TARGET-PROBE-V2", subtitle: "(Kehittynyt kohde- ja rakennustunnistus)" }
-};
-
 const S2_PRIORITY = ["TCI", "NIRFC", "AP", "NDBI_CLEAN", "NDBI", "NDRE", "NDVI", "NBR", "CAMO"];
 
 // --- HELPERS ---
 function formatSize(bytes) {
-    if (!bytes || bytes === 0) return "0 t";
+    if (!bytes || bytes === 0) return "0 B";
     const k = 1024;
-    const sizes = ['t', 'kt', 'Mt', 'Gt', 'Tt'];
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + sizes[i];
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
 }
 
 function downloadFile(url, filename) {
@@ -88,6 +101,7 @@ const baseLayers = {
 
 // --- INITIALIZATION ---
 document.addEventListener('DOMContentLoaded', () => {
+    setLanguage(currentLang); // This will call translateUI and other updates
     initMap();
     initBasePicker();
     loadConfig();
@@ -133,7 +147,8 @@ function updateAcquisitionRange(layers) {
     if (times.length > 0) {
         const start = times[0];
         const end = times[times.length - 1];
-        rangeEl.innerText = `(${start} - ${end})`;
+        const t = UI_TRANSLATIONS[currentLang];
+        rangeEl.innerText = `${t.acq_range}: (${start} - ${end})`;
     }
 }
 
@@ -141,10 +156,11 @@ function updateNextOverflight(overflights) {
     const nextEl = document.getElementById('next-overflight');
     if (!nextEl || !overflights || !Array.isArray(overflights)) return;
 
+    const t = UI_TRANSLATIONS[currentLang];
     let html = "";
     overflights.forEach(p => {
         if (html) html += "<br>";
-        html += `Seuraava ${p.label}: ${p.time}`;
+        html += `${t.next} ${p.label}: ${p.time}`;
     });
     nextEl.innerHTML = html;
 }
@@ -314,14 +330,17 @@ function jumpToSidebar(sat, prod, identifier) {
 
 function initBasePicker() {
     const container = document.getElementById('base-picker');
+    container.innerHTML = '';
+    const t = UI_TRANSLATIONS[currentLang];
     const options = [
-        { id: 'dark', label: 'Tumma' },
-        { id: 'osm', label: 'Kartta' }
+        { id: 'dark', label: t.dark },
+        { id: 'osm', label: t.map }
     ];
 
     options.forEach(opt => {
         const btn = document.createElement('button');
-        btn.className = 'base-btn' + (opt.id === 'dark' ? ' active' : '');
+        const isVisible = baseLayers[opt.id].getVisible();
+        btn.className = 'base-btn' + (isVisible ? ' active' : '');
         btn.innerText = opt.label;
         btn.onclick = () => {
             Object.keys(baseLayers).forEach(key => {
@@ -431,6 +450,7 @@ async function loadInventory() {
     const picker = document.getElementById('layer-picker');
     const progressBar = document.getElementById('progress-bar');
     const loadingText = document.getElementById('loading-text');
+    const t = UI_TRANSLATIONS[currentLang];
 
     try {
         const response = await fetch(INVENTORY_URL);
@@ -451,11 +471,11 @@ async function loadInventory() {
             if (total) {
                 const percent = Math.round((loaded / total) * 50); // First 50% for download
                 progressBar.style.width = `${percent}%`;
-                loadingText.innerText = `Haetaan... ${Math.round((loaded / 1024 / 1024))} Mt`;
+                loadingText.innerText = `${t.fetching} ${Math.round((loaded / 1024 / 1024))} MB`;
             }
         }
 
-        loadingText.innerText = "Käsitellään tietoja...";
+        loadingText.innerText = t.processing;
         const allChunks = new Uint8Array(loaded);
         let position = 0;
         for (const chunk of chunks) {
@@ -473,12 +493,12 @@ async function loadInventory() {
             updateNextOverflight(data.next_overflights);
             renderLayerPicker(data.layers);
         } else {
-            picker.innerHTML = `<div id="loading">Ei kuvia saatavilla.</div>`;
+            picker.innerHTML = `<div id="loading">${t.no_images}</div>`;
             if (data.next_overflights) updateNextOverflight(data.next_overflights);
         }
     } catch (e) {
         console.error("Inventory error:", e);
-        picker.innerHTML = `<div id="loading">Virhe ladattaessa inventaariota: ${e.message}</div>`;
+        picker.innerHTML = `<div id="loading">${t.error_loading} ${e.message}</div>`;
     }
 }
 
@@ -603,7 +623,7 @@ function toggleIdentifyRadar() {
         }
         
         const date = new Date(layer.acquisition_time);
-        const label = date.toLocaleString('en-GB', { 
+        const label = date.toLocaleString(currentLang === 'fi' ? 'fi-FI' : (currentLang === 'sv' ? 'sv-SE' : (currentLang === 'de' ? 'de-DE' : 'en-GB')), { 
             month: 'short', day: 'numeric', 
             hour: '2-digit', minute: '2-digit', timeZone: 'UTC' 
         }) + "Z";
@@ -650,6 +670,8 @@ function renderLayerPicker(layers) {
     const picker = document.getElementById('layer-picker');
     const progressBar = document.getElementById('progress-bar');
     const loadingText = document.getElementById('loading-text');
+    const t = UI_TRANSLATIONS[currentLang];
+    const pt = PRODUCT_TRANSLATIONS[currentLang];
 
     const satOrder = ['S2', 'S1', 'FUSED'];
     const expandedSats = new Set();
@@ -676,7 +698,7 @@ function renderLayerPicker(layers) {
 
     satOrder.forEach(sat => {
         if (!groups[sat]) return;
-        const satMeta = TRANSLATIONS[sat] || { title: sat, subtitle: "" };
+        const satMeta = pt[sat] || { title: sat, subtitle: "" };
         const satDiv = document.createElement('div');
         satDiv.className = 'sat-group' + (expandedSats.has(sat) ? '' : ' collapsed');
         satDiv.id = `group-${sat}`;
@@ -690,8 +712,8 @@ function renderLayerPicker(layers) {
         if (sat === 'S2') {
             headerHtml += `
                 <div class="sort-row">
-                    <button class="sort-btn ${s2SortMode === 'product' ? 'active' : ''}" onclick="event.stopPropagation(); setS2SortMode('product')">Tuoteittain</button>
-                    <button class="sort-btn ${s2SortMode === 'grid' ? 'active' : ''}" onclick="event.stopPropagation(); setS2SortMode('grid')">Ruuduittain</button>
+                    <button class="sort-btn ${s2SortMode === 'product' ? 'active' : ''}" onclick="event.stopPropagation(); setS2SortMode('product')">${t.by_product}</button>
+                    <button class="sort-btn ${s2SortMode === 'grid' ? 'active' : ''}" onclick="event.stopPropagation(); setS2SortMode('grid')">${t.by_grid}</button>
                 </div>
             `;
         }
@@ -705,7 +727,7 @@ function renderLayerPicker(layers) {
             const gridGroups = {};
             Object.keys(groups[sat]).forEach(type => {
                 groups[sat][type].forEach(layer => {
-                    const grid = getGridSquare(layer) || "Tuntematon";
+                    const grid = getGridSquare(layer) || t.unknown;
                     if (!gridGroups[grid]) gridGroups[grid] = {};
                     if (!gridGroups[grid][type]) gridGroups[grid][type] = [];
                     gridGroups[grid][type].push(layer);
@@ -742,7 +764,7 @@ function renderLayerPicker(layers) {
 
                 const types = Object.keys(gridGroups[grid]).sort((a, b) => S2_PRIORITY.indexOf(a) - S2_PRIORITY.indexOf(b));
                 types.forEach(type => {
-                    const typeMeta = TRANSLATIONS[type] || { title: type, subtitle: "" };
+                    const typeMeta = pt[type] || { title: type, subtitle: "" };
                     const typeDiv = document.createElement('div');
                     typeDiv.className = 'prod-group collapsed';
                     typeDiv.id = `prod-S2-${grid}-${type}`;
@@ -772,7 +794,7 @@ function renderLayerPicker(layers) {
             });
 
             types.forEach(type => {
-                const typeMeta = TRANSLATIONS[type] || { title: type, subtitle: "" };
+                const typeMeta = pt[type] || { title: type, subtitle: "" };
                 const typeDiv = document.createElement('div');
                 typeDiv.className = 'prod-group collapsed';
                 typeDiv.id = `prod-${sat}-${type}`;
@@ -836,9 +858,10 @@ function createLayerItem(layer) {
     if (grid) div.dataset.grid = grid;
     div.dataset.time = layer.acquisition_time;
     
+    const t = UI_TRANSLATIONS[currentLang];
     const date = new Date(layer.acquisition_time);
     const friendlyTime =
-        date.toLocaleString("en-GB", {
+        date.toLocaleString(currentLang === 'fi' ? 'fi-FI' : (currentLang === 'sv' ? 'sv-SE' : (currentLang === 'de' ? 'de-DE' : 'en-GB')), {
             month: "short",
             day: "numeric",
             hour: "2-digit",
@@ -858,7 +881,7 @@ function createLayerItem(layer) {
             <span class="layer-status">${cloudStr}${layer.acquisition_time.split("T")[0]}</span>
         </div>
         <div class="layer-actions">
-            <button class="dl-btn" title="Lataa täysi TIF">
+            <button class="dl-btn" title="${t.download_tif}">
                 <svg viewBox="0 0 24 24" width="16" height="16">
                     <path fill="currentColor" d="M12 16l-5-5h3V4h4v7h3l-5 5zm9 2v2H3v-2h18z"/>
                 </svg>

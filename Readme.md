@@ -40,63 +40,63 @@ Settings are handled via a `.env` file.
 
 ### CDSE Credentials
 
-| Variable | Description |
-| :--- | :--- |
-| `COPERNICUS_USERNAME` | Your CDSE account email |
+| Variable              | Description                |
+| :-------------------- | :------------------------- |
+| `COPERNICUS_USERNAME` | Your CDSE account email    |
 | `COPERNICUS_PASSWORD` | Your CDSE account password |
 
 ### Core Control
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `PIPELINES` | `S1,S2,FUSION` (comma-separated list) | `S1,S2` |
-| `USE_LOG` | Skip products already processed (uses `s1_last.json` / `s2_last.json`) | `True` |
-| `TARGET_DIR` | Root directory for the `output/` folder | `.` |
-| `CLEANUP_AFTER_RUN` | Automatically delete raw data after successful processing | `False` |
-| `CLEANUP_DAYS` | Number of days to keep raw data | `30` |
-| `APPRISE_URLS` | Optional [Apprise](https://github.com/caronc/apprise) URIs for alerts | - |
+
+| Variable            | Description                                                            | Default |
+| :------------------ | :--------------------------------------------------------------------- | :------ |
+| `PIPELINES`         | `S1,S2,FUSION` (comma-separated list)                                  | `S1,S2` |
+| `USE_LOG`           | Skip products already processed (uses `s1_last.json` / `s2_last.json`) | `True`  |
+| `TARGET_DIR`        | Root directory for the `output/` folder                                | `.`     |
+| `CLEANUP_AFTER_RUN` | Automatically delete raw data after successful processing              | `False` |
+| `CLEANUP_DAYS`      | Number of days to keep raw data                                        | `30`    |
+| `APPRISE_URLS`      | Optional [Apprise](https://github.com/caronc/apprise) URIs for alerts  | -       |
 
 ### Performance & Hardware
 
-
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `PIPELINE_WORKERS` | Concurrent threads for warping and index calculation | `2` |
-| `MAX_PARALLEL_FINALIZERS` | Concurrent threads for COG and Sidecar generation | `2` |
-| `DISABLE_GPU` | Force CPU mode even if CUDA/CuPy is available | `False` |
-| `ENABLE_GPU_WARP` | Use experimental CUDA-accelerated warping for S1 | `False` |
-| `GDAL_NUM_THREADS` | Number of threads for GDAL internal operations | `PIPELINE_WORKERS` |
+| Variable                  | Description                                          | Default            |
+| :------------------------ | :--------------------------------------------------- | :----------------- |
+| `PIPELINE_WORKERS`        | Concurrent threads for warping and index calculation | `2`                |
+| `MAX_PARALLEL_FINALIZERS` | Concurrent threads for COG and Sidecar generation    | `2`                |
+| `DISABLE_GPU`             | Force CPU mode even if CUDA/CuPy is available        | `False`            |
+| `ENABLE_GPU_WARP`         | Use experimental CUDA-accelerated warping for S1     | `False`            |
+| `GDAL_NUM_THREADS`        | Number of threads for GDAL internal operations       | `PIPELINE_WORKERS` |
 
 ### Sentinel-1 (Radar) Parameters
 
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `S1_BOX` | Search area coordinates: `West,South,East,North`. Supports single box, semicolon-separated list (`box1;box2`), or JSON list (`["box1", "box2"]`). | - |
-| `S1_STARTDATE` | Earliest sensing date (YYYY-MM-DD) | Yesterday |
-| `S1_MAXRECORDS` | Maximum number of products to download per box | `5` |
-| `S1_PRODUCTTYPE` | `GRD` (Ground Range Detected) is standard | `GRD` |
-| `S1_SENSORMODE` | `IW` (Interferometric Wide Swath) is standard | `IW` |
-| `S1_SORTPARAM` | CDSE sorting parameter (e.g., `startDate`) | `startDate` |
-| `S1_SORTORDER` | `descending` or `ascending` | `descending` |
-| `S1_PROCESSES` | `VV, VH, RATIOVVVH` | `VV,VH,RATIOVVVH` |
+| Variable         | Description                                                                                                                                       | Default           |
+| :--------------- | :------------------------------------------------------------------------------------------------------------------------------------------------ | :---------------- |
+| `S1_BOX`         | Search area coordinates: `West,South,East,North`. Supports single box, semicolon-separated list (`box1;box2`), or JSON list (`["box1", "box2"]`). | -                 |
+| `S1_STARTDATE`   | Earliest sensing date (YYYY-MM-DD)                                                                                                                | Yesterday         |
+| `S1_MAXRECORDS`  | Maximum number of products to download per box                                                                                                    | `5`               |
+| `S1_PRODUCTTYPE` | `GRD` (Ground Range Detected) is standard                                                                                                         | `GRD`             |
+| `S1_SENSORMODE`  | `IW` (Interferometric Wide Swath) is standard                                                                                                     | `IW`              |
+| `S1_SORTPARAM`   | CDSE sorting parameter (e.g., `startDate`)                                                                                                        | `startDate`       |
+| `S1_SORTORDER`   | `descending` or `ascending`                                                                                                                       | `descending`      |
+| `S1_PROCESSES`   | `VV, VH, RATIOVVVH`                                                                                                                               | `VV,VH,RATIOVVVH` |
 
 ### Sentinel-2 (Optical) Parameters
 
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `S2_BOX` | Search area coordinates: `West,South,East,North`. Supports single box, semicolon-separated list (`box1;box2`), or JSON list (`["box1", "box2"]`). | - |
-| `S2_STARTDATE` | Earliest sensing date (YYYY-MM-DD). If omitted, resumes from the last run date in `s2_last.json`. | Yesterday |
-| `S2_MAXRECORDS` | Maximum number of products to download per box | `5` |
-| `S2_CLOUDCOVER` | Maximum allowed cloud coverage percentage (0-100) | `5` |
-| `S2_PRODUCTTYPE` | `L2A` (Bottom of Atmosphere) is recommended | `L2A` |
-| `S2_SORTPARAM` | CDSE sorting parameter (e.g., `startDate`) | `startDate` |
-| `S2_SORTORDER` | `descending` or `ascending` | `descending` |
-| `S2_PROCESSES` | `TCI, NIRFC, AP, NDVI, NDBI, NDBI_CLEAN, NDRE, NBR, CAMO` | (All) |
+| Variable         | Description                                                                                                                                       | Default      |
+| :--------------- | :------------------------------------------------------------------------------------------------------------------------------------------------ | :----------- |
+| `S2_BOX`         | Search area coordinates: `West,South,East,North`. Supports single box, semicolon-separated list (`box1;box2`), or JSON list (`["box1", "box2"]`). | -            |
+| `S2_STARTDATE`   | Earliest sensing date (YYYY-MM-DD). If omitted, resumes from the last run date in `s2_last.json`.                                                 | Yesterday    |
+| `S2_MAXRECORDS`  | Maximum number of products to download per box                                                                                                    | `5`          |
+| `S2_CLOUDCOVER`  | Maximum allowed cloud coverage percentage (0-100)                                                                                                 | `5`          |
+| `S2_PRODUCTTYPE` | `L2A` (Bottom of Atmosphere) is recommended                                                                                                       | `L2A`        |
+| `S2_SORTPARAM`   | CDSE sorting parameter (e.g., `startDate`)                                                                                                        | `startDate`  |
+| `S2_SORTORDER`   | `descending` or `ascending`                                                                                                                       | `descending` |
+| `S2_PROCESSES`   | `TCI, NIRFC, AP, NDVI, NDBI, NDBI_CLEAN, NDRE, NBR, CAMO`                                                                                         | (All)        |
 
 ### Fusion Parameters
 
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `FUSION_PROCESSES` | `RADAR-BURN, LIFE-MACHINE, TARGET-PROBE-V2` | (All) |
+| Variable           | Description                                 | Default |
+| :----------------- | :------------------------------------------ | :------ |
+| `FUSION_PROCESSES` | `RADAR-BURN, LIFE-MACHINE, TARGET-PROBE-V2` | (All)   |
 
 ## Usage
 
