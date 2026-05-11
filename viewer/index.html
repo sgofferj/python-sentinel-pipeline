@@ -23,15 +23,21 @@
 
     <div id="sidebar">
         <div class="header">
-            <h1>Satelliittikuvat</h1>
+            <div class="lang-picker">
+                <button class="lang-btn" id="lang-fi" onclick="setLanguage('fi')">FI</button>
+                <button class="lang-btn" id="lang-sv" onclick="setLanguage('sv')">SV</button>
+                <button class="lang-btn" id="lang-en" onclick="setLanguage('en')">EN</button>
+                <button class="lang-btn" id="lang-de" onclick="setLanguage('de')">DE</button>
+            </div>
+            <h1 data-i18n="title">Satelliittikuvat</h1>
             <p id="acq-range" style="font-size: 0.65rem; color: #aaa; margin-top: 5px; margin-bottom: 2px; font-family: monospace;"></p>
             <p id="next-overflight" style="font-size: 0.65rem; color: #00bcd4; margin-bottom: 10px; font-family: monospace;"></p>
-            <p>Valitse kartalle päällekkäin asetettavat tasot.</p>
+            <p data-i18n="select_layers">Valitse kartalle päällekkäin asetettavat tasot.</p>
             <div class="action-row">
-                <button id="deselect-all" class="deselect-btn" title="Poista kaikki valinnat">Tyhjennä</button>
-                <button id="zoom-available" class="action-btn" title="Näytä kaikki">Zoom</button>
-                <button id="identify-optical" class="toggle-btn" title="Näytä optiset alueet">Optinen</button>
-                <button id="identify-radar" class="toggle-btn" title="Näytä tutka-alueet">Tutka</button>
+                <button id="deselect-all" class="deselect-btn" data-i18n-title="clear" data-i18n="clear">Tyhjennä</button>
+                <button id="zoom-available" class="action-btn" data-i18n-title="zoom" data-i18n="zoom">Zoom</button>
+                <button id="identify-optical" class="toggle-btn" data-i18n-title="optical" data-i18n="optical">Optinen</button>
+                <button id="identify-radar" class="toggle-btn" data-i18n-title="radar" data-i18n="radar">Tutka</button>
             </div>
         </div>
         <div id="base-picker" class="base-area">
@@ -42,7 +48,7 @@
                 <div class="progress-container">
                     <div id="progress-bar" class="progress-bar"></div>
                 </div>
-                <p id="loading-text">Ladataan inventaariota...</p>
+                <p id="loading-text" data-i18n="loading_inventory">Ladataan inventaariota...</p>
             </div>
         </div>
     </div>
@@ -54,6 +60,7 @@
     <!-- Libraries -->
     <script src="https://cdn.jsdelivr.net/npm/geotiff"></script>
     <script src="https://cdn.jsdelivr.net/npm/ol@v10.3.1/dist/ol.js"></script>
+    <script src="js/translations.js"></script>
     <script src="js/app.js"></script>
 </body>
 </html>

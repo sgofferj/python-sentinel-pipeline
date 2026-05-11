@@ -8,3 +8,6 @@ psutil
 cupy-cuda12x
 apprise
 skyfield
+atproto
+Pillow
+pillow-heif
