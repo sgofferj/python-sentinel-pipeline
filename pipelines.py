@@ -61,6 +61,7 @@ FUSION_PROCESSES: List[str] = os.getenv(
 
 CLEANUP_AFTER_RUN: bool = os.getenv("CLEANUP_AFTER_RUN", "false").lower() == "true"
 CLEANUP_DAYS: int = int(os.getenv("CLEANUP_DAYS", "30"))
+CLEANUP_RAW: bool = os.getenv("CLEANUP_RAW", "true").lower() == "true"
 
 USERNAME: str = os.getenv("COPERNICUS_USERNAME", "")
 PASSWORD: str = os.getenv("COPERNICUS_PASSWORD", "")
@@ -242,6 +243,22 @@ if __name__ == "__main__":
         inventory_manager.rebuild_inventory()
         # ROI Stage
         roi_count = roi_manager.run_roi_stage()
+
+        # Immediate cleanup of raw data if enabled
+        if CLEANUP_RAW:
+            print(
+                "\nCleaning up source .SAFE directories for processed products...",
+                flush=True,
+            )
+            # Create a combined list of processed products for cleanup
+            processed_all = []
+            for feat in processed_s1:
+                processed_all.append({"base_name": feat["properties"]["title"]})
+            for feat in processed_s2:
+                processed_all.append({"base_name": feat["properties"]["title"]})
+
+            if processed_all:
+                cleanup.cleanup_source_data(processed_all, dry_run=False)
     else:
         print("\nNothing new to finalize.", flush=True)
 

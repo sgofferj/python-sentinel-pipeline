@@ -54,6 +54,7 @@ Settings are handled via a `.env` file.
 | `TARGET_DIR`        | Root directory for the `output/` folder                                | `.`     |
 | `CLEANUP_AFTER_RUN` | Automatically delete raw data after successful processing              | `False` |
 | `CLEANUP_DAYS`      | Number of days to keep raw data                                        | `30`    |
+| `CLEANUP_RAW`       | Delete source .SAFE directories immediately after successful processing | `True`  |
 | `APPRISE_URLS`      | Optional [Apprise](https://github.com/caronc/apprise) URIs for alerts  | -       |
 
 ### Performance & Hardware
