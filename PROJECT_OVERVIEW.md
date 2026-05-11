@@ -58,6 +58,8 @@ graph TD
         S1R & S2R & FUS --> COG[cog_finalizer.py]
         COG --> META[metadata_engine.py]
         META --> INV[inventory_manager.py]
+        INV --> ROI[roi_manager.py]
+        ROI --> BSKY[Bluesky Post]
         INV --> OUT[(Global Inventory)]
     end
 ```
@@ -68,11 +70,13 @@ graph TD
 
 ### The Master Pipeline (`pipelines.py`)
 Running `python pipelines.py` performs the following steps autonomously:
-1.  **Search & Download**: Queries the Copernicus API for S1/S2 products matching your `.env` bounding boxes with a start date of **yesterday**.
+1.  **Search & Download**: Queries the Copernicus API for S1/S2 products matching your `.env` bounding boxes.
 2.  **S1 Processing**: Calibrates, warps, and renders SAR products (VV, VH, Ratio).
 3.  **S2 Processing**: Warps and renders multispectral indices (NDVI, NDBI, etc.).
 4.  **Sensor Fusion**: Correlates the new S1 and S2 data to create "RADAR-BURN" and "TARGET-PROBE" composites.
-5.  **Finalization**: Converts all visuals to Cloud-Optimized GeoTIFFs (COG) and rebuilds the `inventory.json` for the frontend.
+5.  **Finalization**: Converts all visuals to Cloud-Optimized GeoTIFFs (COG) and rebuilds the `inventory.json`.
+6.  **ROI & Social**: Automatically crops regional sites defined in `roi_config.json` and posts updates to Bluesky.
+7.  **Cleanup**: If `CLEANUP_RAW=True`, source directories are removed after success.
 
 ### Manual / Maintenance Steps
 While `pipelines.py` handles the daily automation, you can interact with components separately:

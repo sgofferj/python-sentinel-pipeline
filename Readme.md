@@ -135,6 +135,10 @@ While the pipeline is highly automated, the following utility scripts are availa
 
 The project includes a lightweight web viewer in the `viewer/` directory. It's designed to be served independently (e.g., via Nginx or `python -m http.server`) and reads the `output/` directory to display your products on an OpenLayers map.
 
+- **Multi-language Support:** Choose between Finnish, Swedish, English, and German via the sidebar.
+- **Smart Grouping:** Sort Sentinel-2 imagery by product type or by grid tile.
+- **Interactive Layers:** Hover to see footprints, click to jump to the sidebar entry.
+
 ## Hardware Acceleration (GPU)
 
 If you want to use your GPU:
@@ -143,3 +147,4 @@ If you want to use your GPU:
 2. Ensure `cupy` is available in your environment.
 3. The pipeline will detect it and switch to GPU kernels for index math.
 4. Set `DISABLE_GPU=True` in `.env` if you need to force CPU mode.
+if you need to force CPU mode.
