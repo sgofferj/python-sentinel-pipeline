@@ -176,6 +176,9 @@ def generate_sidecar(
 
             s1_match: Optional[re.Match] = re.search(r"S1_(\d{8}T\d{6})", filename)
             s2_match: Optional[re.Match] = re.search(r"-(\d{8}T\d{6}Z)", filename)
+            roi_match: Optional[re.Match] = re.search(
+                r"_(\d{4}-\d{2}-\d{2}T\d{6}Z)", filename
+            )
 
             if s1_match:
                 raw_t: str = s1_match.group(1)
@@ -189,6 +192,8 @@ def generate_sidecar(
                     f"{raw_t_s2[:4]}-{raw_t_s2[4:6]}-{raw_t_s2[6:8]}T"
                     f"{raw_t_s2[9:11]}:{raw_t_s2[11:13]}:{raw_t_s2[13:15]}Z"
                 )
+            elif roi_match:
+                timestamp = roi_match.group(1)
 
             metadata = {
                 "product": product_type,

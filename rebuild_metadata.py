@@ -80,12 +80,34 @@ def rebuild_all():
 
                         product_id = f"FUSED-{p_type}"
                         legend_id = p_type
+                    elif sat == "ROI":
+                        # Filename: {roi_name}_{simple_prod}_{iso_clean}.tif
+                        # e.g. My ROI_TCI_2026-05-05T093041Z.tif
+                        m = re.search(
+                            r"^(.*)_(.*)_(\d{4}-\d{2}-\d{2}T\d{6}Z)\.tif$", file, re.I
+                        )
+                        if m:
+                            roi_name = m.group(1)
+                            p_type = m.group(2).upper()
+                            product_id = f"ROI-{roi_name}-{p_type}"
+                            # Try to determine legend from p_type
+                            if p_type in ["VV", "VH", "RATIO"]:
+                                legend_id = f"S1-{p_type}"
+                            else:
+                                legend_id = f"S2-{p_type}"
+                        else:
+                            product_id = f"ROI-{file}"
+                            legend_id = "S2-TCI"
                     else:
                         p_type = parts[idx + 2].upper()  # NDVI, VH, etc.
                         product_id = f"{sat}-{p_type}"
                         legend_id = product_id
 
                     eff_res = RES_MAP.get(product_id)
+                    if eff_res is None:
+                        # Fallback for FUSED and ROI
+                        eff_res = RES_MAP.get(legend_id)
+
                     print(
                         f"Regenerating sidecar for: {file} ({product_id}) @ {eff_res}m",
                         flush=True,
