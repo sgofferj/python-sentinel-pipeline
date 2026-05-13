@@ -59,7 +59,7 @@ def get_acquisition_time(json_path: str) -> Optional[datetime]:
 
 def parse_acquisition_time_from_filename(filename: str) -> Optional[datetime]:
     """Parses acquisition time from analytic filename."""
-    s2_match = re.search(r"S2_(\d{8}T\d{6})Z", filename)
+    s2_match = re.search(r"S2._.*_(\d{8}T\d{6})", filename)
     if s2_match:
         time_str = s2_match.group(1)
         try:
@@ -68,7 +68,7 @@ def parse_acquisition_time_from_filename(filename: str) -> Optional[datetime]:
         except ValueError:
             pass
 
-    s1_match = re.search(r"S1_(\d{8}T\d{6})_", filename)
+    s1_match = re.search(r"S1[AB]_.*_(\d{8}T\d{6})_", filename)
     if s1_match:
         time_str = s1_match.group(1)
         try:
@@ -239,7 +239,7 @@ def cleanup_source_data(products: List[Dict[str, Any]], dry_run: bool = True) ->
         base_name = prod["base_name"]
 
         # S1 Logic
-        s1_match = re.search(r"S1_(\d{8}T\d{6})_(\d{8}T\d{6})", base_name)
+        s1_match = re.search(r"S1[AB]_.*_(\d{8}T\d{6})_(\d{8}T\d{6})", base_name)
         if s1_match:
             start_t, end_t = s1_match.groups()
             for safe in safe_dirs:
@@ -256,7 +256,7 @@ def cleanup_source_data(products: List[Dict[str, Any]], dry_run: bool = True) ->
                         removed_safes += 1
 
         # S2 Logic
-        s2_match = re.search(r"(\d{8}T\d{6})Z", base_name)
+        s2_match = re.search(r"(\d{8}T\d{6})", base_name)
         if s2_match:
             time_str = s2_match.group(1)
             for safe in safe_dirs:
@@ -282,18 +282,19 @@ def should_keep_entry(title: str, products: List[Dict[str, Any]]) -> bool:
         base_name = prod["base_name"]
 
         # S1 title matches via timestamps
-        s1_match = re.search(r"S1_(\d{8}T\d{6})_(\d{8}T\d{6})", base_name)
+        s1_match = re.search(r"S1[AB]_.*_(\d{8}T\d{6})_(\d{8}T\d{6})", base_name)
         if s1_match:
             start_t, end_t = s1_match.groups()
             if f"_{start_t}_" in title and f"_{end_t}_" in title:
                 return False
 
         # S2 title matches via timestamp
-        s2_match = re.search(r"(\d{8}T\d{6})Z", base_name)
+        s2_match = re.search(r"(\d{8}T\d{6})", base_name)
         if s2_match:
             time_str = s2_match.group(1)
             if f"_{time_str}_" in title:
                 return False
+
     return True
 
 
