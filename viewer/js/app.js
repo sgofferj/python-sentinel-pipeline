@@ -50,7 +50,8 @@ const Z_INDEX_IDENTIFY = 100000000; // 100M
 const Z_INDEX_HIGHLIGHT = 110000000; // 110M
 const Z_INDEX_OVERLAYS = 200000000; // 200M
 
-const S2_PRIORITY = ["TCI", "NIRFC", "AP", "NDBI_CLEAN", "NDBI", "NDRE", "NDVI", "NBR", "CAMO"];
+const S2_PRIORITY = ["TCI", "TCI-AIS", "NIRFC", "AP", "NDBI_CLEAN", "NDBI", "NDRE", "NDVI", "NBR", "CAMO"];
+const S1_PRIORITY = ["VV", "VH", "RATIO", "RATIO-AIS"];
 
 // --- HELPERS ---
 function formatSize(bytes) {
@@ -762,7 +763,14 @@ function renderLayerPicker(layers) {
 
                 const gridProdContainer = gridDiv.querySelector('.prod-container');
 
-                const types = Object.keys(gridGroups[grid]).sort((a, b) => S2_PRIORITY.indexOf(a) - S2_PRIORITY.indexOf(b));
+                const types = Object.keys(gridGroups[grid]).sort((a, b) => {
+                    const idxA = S2_PRIORITY.indexOf(a);
+                    const idxB = S2_PRIORITY.indexOf(b);
+                    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+                    if (idxA !== -1) return -1;
+                    if (idxB !== -1) return 1;
+                    return a.localeCompare(b);
+                });
                 types.forEach(type => {
                     const typeMeta = pt[type] || { title: type, subtitle: "" };
                     const typeDiv = document.createElement('div');
@@ -789,7 +797,20 @@ function renderLayerPicker(layers) {
             });
         } else {
             const types = Object.keys(groups[sat]).sort((a, b) => {
-                if (sat === 'S2') return S2_PRIORITY.indexOf(a) - S2_PRIORITY.indexOf(b);
+                if (sat === 'S2') {
+                    const idxA = S2_PRIORITY.indexOf(a);
+                    const idxB = S2_PRIORITY.indexOf(b);
+                    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+                    if (idxA !== -1) return -1;
+                    if (idxB !== -1) return 1;
+                }
+                if (sat === 'S1') {
+                    const idxA = S1_PRIORITY.indexOf(a);
+                    const idxB = S1_PRIORITY.indexOf(b);
+                    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+                    if (idxA !== -1) return -1;
+                    if (idxB !== -1) return 1;
+                }
                 return a.localeCompare(b);
             });
 

@@ -111,7 +111,9 @@ const PRODUCT_TRANSLATIONS = {
         "NBR": { title: "NBR-indeksi", subtitle: "(Normalisoitu paloindeksi tai Paloalueindeksi)" },
         "LIFE-MACHINE": { title: "LIFE-MACHINE", subtitle: "(Biomassan ja keinotekoisten rakenteiden erottelu)" },
         "RADAR-BURN": { title: "RADAR-BURN", subtitle: "(Tutkaheijastumat optisen kuvan päällä)" },
-        "TARGET-PROBE-V2": { title: "TARGET-PROBE-V2", subtitle: "(Kehittynyt kohde- ja rakennustunnistus)" }
+        "TARGET-PROBE-V2": { title: "TARGET-PROBE-V2", subtitle: "(Kehittynyt kohde- ja rakennustunnistus)" },
+        "RATIO-AIS": { title: "AIS-korrelaatio (SAR)", subtitle: "(Alustunnistus VV/VH-suhteesta)" },
+        "TCI-AIS": { title: "AIS-korrelaatio (TCI)", subtitle: "(Alustunnistus tosivärikuvasta)" }
     },
     sv: {
         "S1": { title: "SAR-radar", subtitle: "(ESA Sentinel 1)" },
@@ -130,7 +132,9 @@ const PRODUCT_TRANSLATIONS = {
         "NBR": { title: "NBR-index", subtitle: "(Normaliserat brandindex)" },
         "LIFE-MACHINE": { title: "LIFE-MACHINE", subtitle: "(Separation av biomassa ja konstgjorda strukturer)" },
         "RADAR-BURN": { title: "RADAR-BURN", subtitle: "(Radarreflektioner på optisk bild)" },
-        "TARGET-PROBE-V2": { title: "TARGET-PROBE-V2", subtitle: "(Avancerad objekt- och byggnadsidentifiering)" }
+        "TARGET-PROBE-V2": { title: "TARGET-PROBE-V2", subtitle: "(Avancerad objekt- och byggnadsidentifiering)" },
+        "RATIO-AIS": { title: "AIS-korrelation (SAR)", subtitle: "(Fartygshistorik på VV/VH-förhållande)" },
+        "TCI-AIS": { title: "AIS-korrelation (TCI)", subtitle: "(Fartygshistorik på sannfärg)" }
     },
     en: {
         "S1": { title: "SAR Radar", subtitle: "(ESA Sentinel 1)" },
@@ -149,7 +153,9 @@ const PRODUCT_TRANSLATIONS = {
         "NBR": { title: "NBR Index", subtitle: "(Normalized Burn Ratio)" },
         "LIFE-MACHINE": { title: "LIFE-MACHINE", subtitle: "(Biomass and artificial structure separation)" },
         "RADAR-BURN": { title: "RADAR-BURN", subtitle: "(Radar backscatter over optical imagery)" },
-        "TARGET-PROBE-V2": { title: "TARGET-PROBE-V2", subtitle: "(Advanced target and building detection)" }
+        "TARGET-PROBE-V2": { title: "TARGET-PROBE-V2", subtitle: "(Advanced target and building detection)" },
+        "RATIO-AIS": { title: "AIS Correlation (SAR)", subtitle: "(Vessel correlation on VV/VH Ratio)" },
+        "TCI-AIS": { title: "AIS Correlation (TCI)", subtitle: "(Vessel correlation on True Color)" }
     },
     de: {
         "S1": { title: "SAR Radar", subtitle: "(ESA Sentinel 1)" },
@@ -168,6 +174,8 @@ const PRODUCT_TRANSLATIONS = {
         "NBR": { title: "NBR-Index", subtitle: "(Normalisierter Brandindex)" },
         "LIFE-MACHINE": { title: "LIFE-MACHINE", subtitle: "(Trennung von Biomasse und künstlichen Strukturen)" },
         "RADAR-BURN": { title: "RADAR-BURN", subtitle: "(Radar-Rückstreuung über optischen Bildern)" },
-        "TARGET-PROBE-V2": { title: "TARGET-PROBE-V2", subtitle: "(Fortgeschrittene Objekt- und Gebäudeerkennung)" }
+        "TARGET-PROBE-V2": { title: "TARGET-PROBE-V2", subtitle: "(Fortgeschrittene Objekt- und Gebäudeerkennung)" },
+        "RATIO-AIS": { title: "AIS-Korrelation (SAR)", subtitle: "(Schiffskorrelation auf VV/VH-Verhältnis)" },
+        "TCI-AIS": { title: "AIS-Korrelation (TCI)", subtitle: "(Schiffskorrelation auf Echtfarbenbild)" }
     }
 };
