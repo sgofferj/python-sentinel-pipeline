@@ -33,6 +33,7 @@ The goal is to produce physically consistent, high-contrast imagery optimized fo
 - **CAMO:** Discovery composite for spotting anomalies in rural/forested terrain.
 - **TARGET-PROBE-V2:** Advanced sensor fusion gating building signatures with radar returns.
 - **LIFE-MACHINE:** Combined SAR/Optical discovery composite for distinguishing natural terrain from man-made structures.
+- **AIS Correlation:** Correlates satellite imagery with historical AIS vessel data from a [python-ais-recorder](https://github.com/sgofferj/python-ais-recorder) API. Circles and data blocks are plotted onto S1-Ratio or S2-TCI images to identify ships at the exact moment of acquisition.
 
 ## Configuration
 
@@ -55,6 +56,7 @@ Settings are handled via a `.env` file.
 | `CLEANUP_AFTER_RUN` | Automatically delete raw data after successful processing              | `False` |
 | `CLEANUP_DAYS`      | Number of days to keep raw data                                        | `30`    |
 | `CLEANUP_RAW`       | Delete source .SAFE directories immediately after successful processing | `True`  |
+| `EXECUTE_AFTER_PIPELINE` | Optional command or script to run after pipeline (e.g., rsync) | -       |
 | `APPRISE_URLS`      | Optional [Apprise](https://github.com/caronc/apprise) URIs for alerts  | -       |
 
 ### Performance & Hardware
@@ -78,7 +80,7 @@ Settings are handled via a `.env` file.
 | `S1_SENSORMODE`  | `IW` (Interferometric Wide Swath) is standard                                                                                                     | `IW`              |
 | `S1_SORTPARAM`   | CDSE sorting parameter (e.g., `startDate`)                                                                                                        | `startDate`       |
 | `S1_SORTORDER`   | `descending` or `ascending`                                                                                                                       | `descending`      |
-| `S1_PROCESSES`   | `VV, VH, RATIOVVVH`                                                                                                                               | `VV,VH,RATIOVVVH` |
+| `S1_PROCESSES`   | `VV, VH, RATIOVVVH, AIS`                                                                                                                         | `VV,VH,RATIOVVVH` |
 
 ### Sentinel-2 (Optical) Parameters
 
@@ -91,7 +93,14 @@ Settings are handled via a `.env` file.
 | `S2_PRODUCTTYPE` | `L2A` (Bottom of Atmosphere) is recommended                                                                                                       | `L2A`        |
 | `S2_SORTPARAM`   | CDSE sorting parameter (e.g., `startDate`)                                                                                                        | `startDate`  |
 | `S2_SORTORDER`   | `descending` or `ascending`                                                                                                                       | `descending` |
-| `S2_PROCESSES`   | `TCI, NIRFC, AP, NDVI, NDBI, NDBI_CLEAN, NDRE, NBR, CAMO`                                                                                         | (All)        |
+| `S2_PROCESSES`   | `TCI, NIRFC, AP, NDVI, NDBI, NDBI_CLEAN, NDRE, NBR, CAMO, AIS`                                                                                    | (All)        |
+
+### AIS Parameters
+
+| Variable               | Description                                           | Default |
+| :--------------------- | :---------------------------------------------------- | :------ |
+| `AIS_RECORDER_URL`     | URL of the python-ais-recorder API                    | -       |
+| `AIS_MAX_TIME_MINUTES` | Search window (+/- minutes) around sensing time       | `30`    |
 
 ### Fusion Parameters
 

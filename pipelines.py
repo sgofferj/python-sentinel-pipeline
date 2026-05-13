@@ -18,6 +18,7 @@ Now honors processed-file logging only after successful handling.
 
 import argparse
 import os
+import subprocess
 import time
 import zipfile
 from typing import Any, Dict, List, Optional
@@ -62,6 +63,7 @@ FUSION_PROCESSES: List[str] = os.getenv(
 CLEANUP_AFTER_RUN: bool = os.getenv("CLEANUP_AFTER_RUN", "false").lower() == "true"
 CLEANUP_DAYS: int = int(os.getenv("CLEANUP_DAYS", "30"))
 CLEANUP_RAW: bool = os.getenv("CLEANUP_RAW", "true").lower() == "true"
+EXECUTE_AFTER_PIPELINE: Optional[str] = os.getenv("EXECUTE_AFTER_PIPELINE")
 
 USERNAME: str = os.getenv("COPERNICUS_USERNAME", "")
 PASSWORD: str = os.getenv("COPERNICUS_PASSWORD", "")
@@ -265,6 +267,16 @@ if __name__ == "__main__":
     if CLEANUP_AFTER_RUN:
         print("\n--- Running Post-Pipeline Cleanup ---", flush=True)
         cleanup.run_cleanup(days=CLEANUP_DAYS, dry_run=False)
+
+    if EXECUTE_AFTER_PIPELINE:
+        print(
+            f"\n--- Running Post-Pipeline Hook: {EXECUTE_AFTER_PIPELINE} ---",
+            flush=True,
+        )
+        try:
+            subprocess.run(EXECUTE_AFTER_PIPELINE, shell=True, check=False)
+        except Exception as e:
+            print(f"Error executing post-pipeline hook: {e}", flush=True)
 
     func.perf_logger.stop_run()
 

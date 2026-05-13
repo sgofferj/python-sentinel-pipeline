@@ -4,6 +4,7 @@ gdal==3.11.3
 rasterio
 dotenv
 shapely
+pyproj
 psutil
 cupy-cuda12x
 apprise
