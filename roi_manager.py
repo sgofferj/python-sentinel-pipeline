@@ -29,6 +29,8 @@ from shapely.geometry import box, shape  # type: ignore
 
 import constants as c
 import functions as func
+import metadata_engine as meta
+import inventory_manager
 
 # Register HEIF opener for Pillow
 pillow_heif.register_heif_opener()
@@ -267,10 +269,15 @@ def run_roi_stage(process_all: bool = False) -> int:
     crops_created = 0
     for layer in layers_to_check:
         product_type = layer.get("product", "")
+        # SKIP existing ROI crops to avoid recursive cropping
+        if product_type.startswith("ROI-"):
+            continue
+
         acq_time = layer.get("acquisition_time", "Unknown")
         tif_rel_path = layer.get("path", "")
         src_path = os.path.join(c.DIRS["OUT"], tif_rel_path)
         constellation = "Sentinel-2" if product_type.startswith("S2") else "Sentinel-1"
+        resolution = layer.get("resolution")
 
         if not os.path.exists(src_path):
             continue
@@ -312,6 +319,15 @@ def run_roi_stage(process_all: bool = False) -> int:
                     )
                     if not crop_product(src_path, dst_path, roi_bbox):
                         continue
+
+                    # Generate sidecar for the new crop
+                    # Label it as ROI-Name-Prod for clear identification
+                    meta.generate_sidecar(
+                        dst_path,
+                        f"ROI-{roi_name}-{simple_prod}",
+                        product_type,  # Keep original legend
+                        effective_res=resolution,
+                    )
                     crops_created += 1
 
                 # Bluesky posting
@@ -339,6 +355,9 @@ def run_roi_stage(process_all: bool = False) -> int:
                         # I'll keep it for now as it's non-georeferenced and small.
 
     print(f"ROI stage complete. {crops_created} crops created.", flush=True)
+    if crops_created > 0:
+        inventory_manager.rebuild_inventory()
+
     func.perf_logger.end_step()
     return crops_created
 
