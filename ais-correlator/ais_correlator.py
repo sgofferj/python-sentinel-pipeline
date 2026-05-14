@@ -12,7 +12,8 @@
 """
 AIS Correlator for Sentinel Satellite Imagery.
 Minimalist visualization: Single circle and data block per vessel.
-Interpolates position at exact acquisition time from a 20m window.
+Interpolates position at exact acquisition time.
+Memory-optimized: Uses windowed drawing for large images.
 """
 
 import os
@@ -20,22 +21,43 @@ import sys
 import json
 import datetime
 import math
+import shutil
+import re
 from typing import Dict, List, Any, Tuple, Optional
 
 import requests
 import rasterio as rio
 from rasterio.warp import transform_bounds
+from rasterio.windows import Window
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 from pyproj import Transformer
-from shapely.geometry import Point
 
 # --- CONFIGURATION ---
 AIS_RECORDER_URL = os.getenv("AIS_RECORDER_URL")
 AIS_MAX_TIME_MINUTES = int(os.getenv("AIS_MAX_TIME_MINUTES", "30"))
 
-def haversine(lat1, lon1, lat2, lon2):
 
+def parse_utc_timestamp(ts_val: Any) -> float:
+    """Parses various timestamp formats into a UTC unix timestamp."""
+    if ts_val is None:
+        return 0.0
+    try:
+        if isinstance(ts_val, (int, float)):
+            return float(ts_val)
+
+        ts_str = str(ts_val).strip()
+        # Add 'Z' if missing and not already having an offset
+        if "T" in ts_str and not any(x in ts_str for x in ["Z", "+", "-"]):
+            ts_str += "Z"
+
+        dt = datetime.datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        return dt.timestamp()
+    except Exception:
+        return 0.0
+
+
+def haversine(lat1, lon1, lat2, lon2):
     R = 6371.0
     dlat, dlon = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
     a = (
@@ -50,23 +72,27 @@ def haversine(lat1, lon1, lat2, lon2):
 def get_metadata(tif_path: str) -> Dict[str, Any]:
     sidecar_path = tif_path.replace(".tif", ".json")
     if os.path.exists(sidecar_path):
-        with open(sidecar_path, "r") as f:
-            meta = json.load(f)
-            return {
-                "time": meta["acquisition_time"],
-                "bounds": [
-                    meta["bounds"][0][1],
-                    meta["bounds"][0][0],
-                    meta["bounds"][1][1],
-                    meta["bounds"][1][0],
-                ],
-                "is_s1": "S1" in meta.get("product", ""),
-            }
+        try:
+            with open(sidecar_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+                return {
+                    "time": meta["acquisition_time"],
+                    "bounds": [
+                        meta["bounds"][0][1],
+                        meta["bounds"][0][0],
+                        meta["bounds"][1][1],
+                        meta["bounds"][1][0],
+                    ],
+                    "is_s1": "S1" in meta.get("product", ""),
+                }
+        except Exception as e:
+            print(f"Warning: Could not read sidecar {sidecar_path}: {e}")
+
     with rio.open(tif_path) as src:
         bounds = transform_bounds(src.crs, "EPSG:4326", *src.bounds)
-        filename, is_s1 = os.path.basename(tif_path), "S1" in os.path.basename(tif_path)
+        filename = os.path.basename(tif_path)
+        is_s1 = "S1" in filename
         time_str = "2026-04-07T12:00:00Z"
-        import re
 
         m = re.search(r"S1_(\d{8}T\d{6})" if is_s1 else r"-(\d{8}T\d{6}Z)", filename)
         if m:
@@ -77,165 +103,171 @@ def get_metadata(tif_path: str) -> Dict[str, Any]:
 
 def fetch_vessel_metadata(mmsi: int) -> Dict[str, Any]:
     if not AIS_RECORDER_URL:
-        raise ValueError("AIS_RECORDER_URL not defined in environment.")
-    try:
-        resp = requests.get(f"{AIS_RECORDER_URL}/vessels?mmsi={mmsi}", timeout=10)
-        if resp.ok:
-            data = resp.json()
-            if isinstance(data, list) and len(data) > 0:
-                return data[0]
-    except:
-        pass
+        return {}
+    for attempt in range(3):
+        try:
+            resp = requests.get(f"{AIS_RECORDER_URL}/vessels?mmsi={mmsi}", timeout=10)
+            if resp.ok:
+                data = resp.json()
+                if isinstance(data, list) and len(data) > 0:
+                    return data[0]
+                return {}
+            if resp.status_code >= 500:
+                print(
+                    f"AIS Server Error ({resp.status_code}) fetching metadata. Retry {attempt+1}/3..."
+                )
+                time.sleep(2 * (attempt + 1))
+                continue
+            break
+        except Exception:
+            time.sleep(1)
     return {}
 
 
 def fetch_ais_data(meta: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not AIS_RECORDER_URL:
         raise ValueError("AIS_RECORDER_URL not defined in environment.")
+
     base_dt = datetime.datetime.fromisoformat(meta["time"].replace("Z", "+00:00"))
     delta = datetime.timedelta(minutes=AIS_MAX_TIME_MINUTES)
-    t_from = (base_dt - delta).isoformat()
-    t_to = (base_dt + delta).isoformat()
+
+    t_from = (base_dt - delta).strftime("%Y-%m-%dT%H:%M:%SZ")
+    t_to = (base_dt + delta).strftime("%Y-%m-%dT%H:%M:%SZ")
     b = meta["bounds"]
-    c_lon, c_lat = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
-    radius_km = haversine(c_lat, c_lon, b[3], b[2]) + 2.0
 
     params = {
         "start_time": t_from,
         "end_time": t_to,
         "bbox": f"{b[0]},{b[1]},{b[2]},{b[3]}",
     }
-    try:
-        resp = requests.get(f"{AIS_RECORDER_URL}/positions", params=params, timeout=30)
-        print(f"[DEBUG] Query URL: {resp.url}")
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        print(f"AIS Query failed: {e}")
-        return []
+
+    for attempt in range(3):
+        try:
+            resp = requests.get(
+                f"{AIS_RECORDER_URL}/positions", params=params, timeout=60
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                print(f"[DEBUG] AIS Server returned {len(data)} reports.")
+                return data
+
+            if resp.status_code >= 500:
+                print(f"AIS Server Error ({resp.status_code}). Retry {attempt+1}/3...")
+                time.sleep(5 * (attempt + 1))
+                continue
+
+            resp.raise_for_status()
+        except Exception as e:
+            if attempt == 2:
+                print(f"AIS Query failed after 3 attempts: {e}")
+            else:
+                time.sleep(2)
+
+    return []
 
 
 def plot_on_image(
     tif_path: str, ais_features: List[Dict[str, Any]], target_time_iso: str
 ):
-    """Interpolates positions and plots MINIMALIST circles on image."""
+    """Memory-efficient windowed plotting on large images."""
     out_path = tif_path.replace(".tif", "_AIS.tif")
-    target_ts = datetime.datetime.fromisoformat(
-        target_time_iso.replace("Z", "+00:00")
-    ).timestamp()
+    target_ts = parse_utc_timestamp(target_time_iso)
+    print(f"[DEBUG] Target Unix Timestamp: {target_ts}")
+
+    # Pre-load font
+    try:
+        font = ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 20
+        )
+    except:  # pylint: disable=bare-except
+        font = ImageFont.load_default()
+
+    dummy_img = Image.new("RGBA", (1, 1))
+    dummy_draw = ImageDraw.Draw(dummy_img)
 
     with rio.open(tif_path) as src:
-        # Read RGBA if available
-        if src.count >= 4:
-            img_data = src.read([1, 2, 3, 4])
-        else:
-            rgb = src.read([1, 2, 3])
-            alpha = np.ones((src.height, src.width), dtype=np.uint8) * 255
-            img_data = np.concatenate([rgb, alpha[np.newaxis, ...]], axis=0)
-
-        if img_data.dtype != np.uint8:
-            img_data = (img_data / np.max(img_data) * 255).astype(np.uint8)
-
-        img = Image.fromarray(np.transpose(img_data, (1, 2, 0)), "RGBA")
-        draw = ImageDraw.Draw(img, "RGBA")
         trans = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
+        width, height = src.width, src.height
+        print(f"[DEBUG] Image dimensions: {width}x{height}, CRS: {src.crs}")
 
         tracks: Dict[int, List[Dict[str, Any]]] = {}
         for item in ais_features:
-            mmsi = item["mmsi"]
-            if mmsi not in tracks:
-                tracks[mmsi] = []
-            tracks[mmsi].append(item)
+            mmsi = item.get("mmsi")
+            if mmsi is not None:
+                if mmsi not in tracks:
+                    tracks[mmsi] = []
+                tracks[mmsi].append(item)
 
         placed_rects: List[List[float]] = []
+        ship_annotations = []
+
         print(f"Analyzing {len(tracks)} vessel tracks for interpolation...")
+
         for mmsi, pings in tracks.items():
-            pings.sort(key=lambda x: str(x.get("timestamp", "")))
+            # Sort by actual numeric timestamp
+            pings.sort(key=lambda x: parse_utc_timestamp(x.get("timestamp")))
 
             p1, p2 = None, None
             for i in range(len(pings) - 1):
-                t1_str = pings[i].get("timestamp")
-                t2_str = pings[i + 1].get("timestamp")
-                if t1_str and t2_str:
-                    t1 = datetime.datetime.fromisoformat(
-                        t1_str.replace("Z", "+00:00")
-                    ).timestamp()
-                    t2 = datetime.datetime.fromisoformat(
-                        t2_str.replace("Z", "+00:00")
-                    ).timestamp()
-                    if t1 <= target_ts <= t2:
-                        p1, p2 = pings[i], pings[i + 1]
-                        break
+                t1 = parse_utc_timestamp(pings[i].get("timestamp"))
+                t2 = parse_utc_timestamp(pings[i + 1].get("timestamp"))
+                if t1 > 0 and t2 > 0 and t1 <= target_ts <= t2:
+                    p1, p2 = pings[i], pings[i + 1]
+                    break
 
             if not p1:
-                latest_t_str = pings[-1].get("timestamp")
-                if latest_t_str:
-                    latest_t = datetime.datetime.fromisoformat(
-                        latest_t_str.replace("Z", "+00:00")
-                    ).timestamp()
-                    if abs(latest_t - target_ts) < 7200:
-                        p1 = pings[-1]
+                # Fallback to latest ping within 2 hours
+                latest_ping = pings[-1]
+                latest_t = parse_utc_timestamp(latest_ping.get("timestamp"))
+                if latest_t > 0 and abs(latest_t - target_ts) < 7200:
+                    p1 = latest_ping
+                else:
+                    # Logic for silent debug: only print first few skipped
+                    if len(ship_annotations) < 5:
+                        print(
+                            f"[DEBUG] Track {mmsi} skipped: No matching time window (Target {target_ts}, Latest {latest_t})"
+                        )
 
             if not p1:
                 continue
 
+            # Interpolate or use static
             if p1 and p2:
-                p1_ts_str = p1.get("timestamp")
-                p2_ts_str = p2.get("timestamp")
-                if p1_ts_str and p2_ts_str:
-                    t1 = datetime.datetime.fromisoformat(
-                        p1_ts_str.replace("Z", "+00:00")
-                    ).timestamp()
-                    t2 = datetime.datetime.fromisoformat(
-                        p2_ts_str.replace("Z", "+00:00")
-                    ).timestamp()
-                    ratio = (target_ts - t1) / (t2 - t1)
-                    lon = float(p1["longitude"]) + ratio * (
-                        float(p2["longitude"]) - float(p1["longitude"])
-                    )
-                    lat = float(p1["latitude"]) + ratio * (
-                        float(p2["latitude"]) - float(p1["latitude"])
-                    )
-                else:
-                    lon, lat = float(p1["longitude"]), float(p1["latitude"])
+                t1 = parse_utc_timestamp(p1["timestamp"])
+                t2 = parse_utc_timestamp(p2["timestamp"])
+                ratio = (target_ts - t1) / (t2 - t1)
+                lon = float(p1["longitude"]) + ratio * (
+                    float(p2["longitude"]) - float(p1["longitude"])
+                )
+                lat = float(p1["latitude"]) + ratio * (
+                    float(p2["latitude"]) - float(p1["latitude"])
+                )
             else:
                 lon, lat = float(p1["longitude"]), float(p1["latitude"])
 
-            name = p1.get("vessel_name") or "Unknown"
-            imo = "N/A"
-            callsign = "N/A"
-
+            # Map to pixels
             mx, my = trans.transform(lon, lat)
             py, px = src.index(mx, my)
-            if not (0 <= px < src.width and 0 <= py < src.height):
+
+            # Debug candidate
+            if len(ship_annotations) < 3:
+                print(
+                    f"[DEBUG] Candidate {mmsi}: ({lon:.5f}, {lat:.5f}) -> Pixel ({px}, {py})"
+                )
+
+            if not (0 <= px < width and 0 <= py < height):
                 continue
 
-            try:
-                v_meta = fetch_vessel_metadata(mmsi)
-                if v_meta:
-                    imo = v_meta.get("imo") or "N/A"
-                    callsign = v_meta.get("callSign") or "N/A"
-            except:
-                pass
+            print(f"[DEBUG] HIT: MMSI {mmsi} at pixel {px},{py}")
 
-            # --- DRAW CIRCLE ONLY ---
-            radius = 15
-            draw.ellipse(
-                [px - radius, py - radius, px + radius, py + radius],
-                outline=(255, 235, 59, 255),
-                width=3,
-            )
+            v_meta = fetch_vessel_metadata(mmsi)
+            name = p1.get("vessel_name") or v_meta.get("vessel_name") or "Unknown"
+            imo = v_meta.get("imo") or "N/A"
+            callsign = v_meta.get("callSign") or "N/A"
 
-            # --- DATA BLOCK ---
+            # Labels and collisions
             text = f"NAME: {name}\nMMSI: {mmsi}\nIMO: {imo}\nCALL: {callsign}"
-            font: Any
-            try:
-                font = ImageFont.truetype(
-                    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 20
-                )
-            except:
-                font = ImageFont.load_default()
-            bbox = draw.textbbox((0, 0), text, font=font)
+            bbox = dummy_draw.textbbox((0, 0), text, font=font)
             tw, th, padding = bbox[2] - bbox[0], bbox[3] - bbox[1], 10
 
             offsets = [
@@ -257,7 +289,7 @@ def plot_on_image(
                     tx + tw + padding,
                     ty + th + padding,
                 ]
-                if tx < 0 or ty < 0 or tx + tw > src.width or ty + th > src.height:
+                if tx < 0 or ty < 0 or tx + tw > width or ty + th > height:
                     continue
                 if any(
                     not (
@@ -278,34 +310,85 @@ def plot_on_image(
                     [tx - padding, ty - padding, tx + tw + padding, ty + th + padding]
                 )
 
-            draw.line(
-                [
-                    px,
-                    py,
-                    best_pos[0] + (tw if px > best_pos[0] else 0),
-                    best_pos[1] + th // 2,
-                ],
-                fill=(255, 235, 59, 180),
-                width=2,
+            ship_annotations.append(
+                {
+                    "px": px,
+                    "py": py,
+                    "text_pos": best_pos,
+                    "text": text,
+                    "tw": tw,
+                    "th": th,
+                    "padding": padding,
+                }
             )
-            draw.rectangle(
-                [
-                    best_pos[0] - padding,
-                    best_pos[1] - padding,
-                    best_pos[0] + tw + padding,
-                    best_pos[1] + th + padding,
-                ],
-                fill=(0, 0, 0, 160),
-                outline=(255, 235, 59, 200),
-                width=1,
-            )
-            draw.text(best_pos, text, font=font, fill=(255, 235, 59, 255))
 
-        final_data = np.transpose(np.array(img), (2, 0, 1))
-        profile = src.profile.copy()
-        profile.update(count=4, dtype=rio.uint8, compress="deflate", tiled=True)
-        with rio.open(out_path, "w", **profile) as dst:
-            dst.write(final_data)
+        if not ship_annotations:
+            print("No vessels plotted on the image area.")
+            return
+
+        # 2. Windowed Drawing
+        print(f"Plotting {len(ship_annotations)} vessels using windowed updates...")
+        shutil.copy(tif_path, out_path)
+
+        with rio.open(out_path, "r+") as dst:
+            for ann in ship_annotations:
+                px, py = ann["px"], ann["py"]
+                tx, ty = ann["text_pos"]
+                tw, th, padding = ann["tw"], ann["th"], ann["padding"]
+
+                min_x = int(min(px - 15, tx - padding) - 5)
+                max_x = int(max(px + 15, tx + tw + padding) + 5)
+                min_y = int(min(py - 15, ty - padding) - 5)
+                max_y = int(max(py + 15, ty + th + padding) + 5)
+
+                min_x, max_x = max(0, min_x), min(width, max_x)
+                min_y, max_y = max(0, min_y), min(height, max_y)
+
+                if max_x <= min_x or max_y <= min_y:
+                    continue
+
+                win = Window(min_x, min_y, max_x - min_x, max_y - min_y)
+                if dst.count >= 4:
+                    win_data = dst.read([1, 2, 3, 4], window=win)
+                else:
+                    rgb = dst.read([1, 2, 3], window=win)
+                    alpha = np.ones((win.height, win.width), dtype=np.uint8) * 255
+                    win_data = np.concatenate([rgb, alpha[np.newaxis, ...]], axis=0)
+
+                win_img = Image.fromarray(np.transpose(win_data, (1, 2, 0)), "RGBA")
+                win_draw = ImageDraw.Draw(win_img, "RGBA")
+
+                lpx, lpy = px - min_x, py - min_y
+                ltx, lty = tx - min_x, ty - min_y
+
+                win_draw.ellipse(
+                    [lpx - 15, lpy - 15, lpx + 15, lpy + 15],
+                    outline=(255, 235, 59, 255),
+                    width=3,
+                )
+                win_draw.line(
+                    [lpx, lpy, ltx + (tw if lpx > ltx else 0), lty + th // 2],
+                    fill=(255, 235, 59, 180),
+                    width=2,
+                )
+                win_draw.rectangle(
+                    [
+                        ltx - padding,
+                        lty - padding,
+                        ltx + tw + padding,
+                        lty + th + padding,
+                    ],
+                    fill=(0, 0, 0, 160),
+                    outline=(255, 235, 59, 200),
+                    width=1,
+                )
+                win_draw.text(
+                    (ltx, lty), ann["text"], font=font, fill=(255, 235, 59, 255)
+                )
+
+                final_win_data = np.transpose(np.array(win_img), (2, 0, 1))
+                dst.write(final_win_data, window=win)
+
     print(f"AIS Correlation complete: {out_path}")
 
 
@@ -313,18 +396,17 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python ais_correlator.py <path_to_satellite_tif>")
         sys.exit(1)
-    target_tif = sys.argv[1]
-    if not os.path.exists(target_tif):
-        print(f"Error: File not found {target_tif}")
+    target_tif_arg = sys.argv[1]
+    if not os.path.exists(target_tif_arg):
+        print(f"Error: File not found {target_tif_arg}")
         sys.exit(1)
     try:
-        metadata = get_metadata(target_tif)
-        ais_data = fetch_ais_data(metadata)
-        if not ais_data:
+        metadata_main = get_metadata(target_tif_arg)
+        ais_data_main = fetch_ais_data(metadata_main)
+        if not ais_data_main:
             print("No AIS data found for this time/area.")
         else:
-            print(f"Found {len(ais_data)} raw reports. Plotting minimalist overlays...")
-            plot_on_image(target_tif, ais_data, metadata["time"])
-    except Exception as e:
-        print(f"Error during AIS correlation: {e}")
+            plot_on_image(target_tif_arg, ais_data_main, metadata_main["time"])
+    except Exception as e_main:
+        print(f"Error during AIS correlation: {e_main}")
         sys.exit(1)
