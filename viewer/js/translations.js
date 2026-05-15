@@ -20,7 +20,9 @@ const UI_TRANSLATIONS = {
         fetching: "Haetaan...",
         processing: "Käsitellään tietoja...",
         unknown: "Tuntematon",
-        acq_range: "Aikaväli"
+        acq_range: "Aikaväli",
+        fullscreen: "Koko näyttö",
+        screenshot: "Kuvakaappaus"
     },
     sv: {
         title: "Satellitbilder",
@@ -89,8 +91,10 @@ const UI_TRANSLATIONS = {
         fetching: "Wird geladen...",
         processing: "Daten werden verarbeitet...",
         unknown: "Unbekannt",
-        acq_range: "Zeitraum"
-    }
+        acq_range: "Zeitraum",
+        fullscreen: "Vollbild",
+        screenshot: "Screenshot"
+        },
 };
 
 const PRODUCT_TRANSLATIONS = {

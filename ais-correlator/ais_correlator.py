@@ -11,9 +11,7 @@
 
 """
 AIS Correlator for Sentinel Satellite Imagery.
-Minimalist visualization: Single circle and data block per vessel.
-Interpolates position at exact acquisition time.
-Memory-optimized: Uses windowed drawing for large images.
+Strip-based rendering for maximum reliability and memory efficiency.
 """
 
 import os
@@ -21,8 +19,8 @@ import sys
 import json
 import datetime
 import math
-import shutil
 import re
+import time
 from typing import Dict, List, Any, Tuple, Optional
 
 import requests
@@ -47,26 +45,17 @@ def parse_utc_timestamp(ts_val: Any) -> float:
             return float(ts_val)
 
         ts_str = str(ts_val).strip()
-        # Add 'Z' if missing and not already having an offset
-        if "T" in ts_str and not any(x in ts_str for x in ["Z", "+", "-"]):
+        time_part = ts_str.split("T")[-1] if "T" in ts_str else ts_str
+
+        if not any(x in time_part for x in ["Z", "+", "-"]):
             ts_str += "Z"
 
         dt = datetime.datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
         return dt.timestamp()
     except Exception:
         return 0.0
-
-
-def haversine(lat1, lon1, lat2, lon2):
-    R = 6371.0
-    dlat, dlon = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
-    a = (
-        math.sin(dlat / 2) ** 2
-        + math.cos(math.radians(lat1))
-        * math.cos(math.radians(lat2))
-        * math.sin(dlon / 2) ** 2
-    )
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
 def get_metadata(tif_path: str) -> Dict[str, Any]:
@@ -85,8 +74,8 @@ def get_metadata(tif_path: str) -> Dict[str, Any]:
                     ],
                     "is_s1": "S1" in meta.get("product", ""),
                 }
-        except Exception as e:
-            print(f"Warning: Could not read sidecar {sidecar_path}: {e}")
+        except Exception:
+            pass
 
     with rio.open(tif_path) as src:
         bounds = transform_bounds(src.crs, "EPSG:4326", *src.bounds)
@@ -113,9 +102,6 @@ def fetch_vessel_metadata(mmsi: int) -> Dict[str, Any]:
                     return data[0]
                 return {}
             if resp.status_code >= 500:
-                print(
-                    f"AIS Server Error ({resp.status_code}) fetching metadata. Retry {attempt+1}/3..."
-                )
                 time.sleep(2 * (attempt + 1))
                 continue
             break
@@ -126,11 +112,10 @@ def fetch_vessel_metadata(mmsi: int) -> Dict[str, Any]:
 
 def fetch_ais_data(meta: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not AIS_RECORDER_URL:
-        raise ValueError("AIS_RECORDER_URL not defined in environment.")
+        raise ValueError("AIS_RECORDER_URL not defined.")
 
     base_dt = datetime.datetime.fromisoformat(meta["time"].replace("Z", "+00:00"))
     delta = datetime.timedelta(minutes=AIS_MAX_TIME_MINUTES)
-
     t_from = (base_dt - delta).strftime("%Y-%m-%dT%H:%M:%SZ")
     t_to = (base_dt + delta).strftime("%Y-%m-%dT%H:%M:%SZ")
     b = meta["bounds"]
@@ -147,48 +132,47 @@ def fetch_ais_data(meta: Dict[str, Any]) -> List[Dict[str, Any]]:
                 f"{AIS_RECORDER_URL}/positions", params=params, timeout=60
             )
             if resp.status_code == 200:
-                data = resp.json()
-                print(f"[DEBUG] AIS Server returned {len(data)} reports.")
-                return data
-
+                return resp.json()
             if resp.status_code >= 500:
-                print(f"AIS Server Error ({resp.status_code}). Retry {attempt+1}/3...")
                 time.sleep(5 * (attempt + 1))
                 continue
-
             resp.raise_for_status()
-        except Exception as e:
-            if attempt == 2:
-                print(f"AIS Query failed after 3 attempts: {e}")
-            else:
-                time.sleep(2)
-
+        except Exception:
+            time.sleep(2)
     return []
 
 
 def plot_on_image(
     tif_path: str, ais_features: List[Dict[str, Any]], target_time_iso: str
 ):
-    """Memory-efficient windowed plotting on large images."""
+    """Robust strip-based rendering for large images."""
     out_path = tif_path.replace(".tif", "_AIS.tif")
     target_ts = parse_utc_timestamp(target_time_iso)
-    print(f"[DEBUG] Target Unix Timestamp: {target_ts}")
 
-    # Pre-load font
     try:
         font = ImageFont.truetype(
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 20
         )
-    except:  # pylint: disable=bare-except
+    except:
         font = ImageFont.load_default()
 
-    dummy_img = Image.new("RGBA", (1, 1))
-    dummy_draw = ImageDraw.Draw(dummy_img)
+    dummy_draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
 
     with rio.open(tif_path) as src:
         trans = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
         width, height = src.width, src.height
-        print(f"[DEBUG] Image dimensions: {width}x{height}, CRS: {src.crs}")
+        profile = src.profile.copy()
+        
+        # Force 4-band RGBA, Tiled, and BIGTIFF for rendering
+        profile.update(
+            count=4, 
+            driver="GTiff", 
+            tiled=True, 
+            blockxsize=512, 
+            blockysize=512, 
+            compress="lzw",
+            BIGTIFF="YES"
+        )
 
         tracks: Dict[int, List[Dict[str, Any]]] = {}
         for item in ais_features:
@@ -204,9 +188,7 @@ def plot_on_image(
         print(f"Analyzing {len(tracks)} vessel tracks for interpolation...")
 
         for mmsi, pings in tracks.items():
-            # Sort by actual numeric timestamp
             pings.sort(key=lambda x: parse_utc_timestamp(x.get("timestamp")))
-
             p1, p2 = None, None
             for i in range(len(pings) - 1):
                 t1 = parse_utc_timestamp(pings[i].get("timestamp"))
@@ -216,197 +198,133 @@ def plot_on_image(
                     break
 
             if not p1:
-                # Fallback to latest ping within 2 hours
                 latest_ping = pings[-1]
                 latest_t = parse_utc_timestamp(latest_ping.get("timestamp"))
                 if latest_t > 0 and abs(latest_t - target_ts) < 7200:
                     p1 = latest_ping
-                else:
-                    # Logic for silent debug: only print first few skipped
-                    if len(ship_annotations) < 5:
-                        print(
-                            f"[DEBUG] Track {mmsi} skipped: No matching time window (Target {target_ts}, Latest {latest_t})"
-                        )
 
             if not p1:
                 continue
 
-            # Interpolate or use static
             if p1 and p2:
-                t1 = parse_utc_timestamp(p1["timestamp"])
-                t2 = parse_utc_timestamp(p2["timestamp"])
+                t1, t2 = parse_utc_timestamp(p1["timestamp"]), parse_utc_timestamp(p2["timestamp"])
                 ratio = (target_ts - t1) / (t2 - t1)
-                lon = float(p1["longitude"]) + ratio * (
-                    float(p2["longitude"]) - float(p1["longitude"])
-                )
-                lat = float(p1["latitude"]) + ratio * (
-                    float(p2["latitude"]) - float(p1["latitude"])
-                )
+                lon = float(p1["longitude"]) + ratio * (float(p2["longitude"]) - float(p1["longitude"]))
+                lat = float(p1["latitude"]) + ratio * (float(p2["latitude"]) - float(p1["latitude"]))
             else:
                 lon, lat = float(p1["longitude"]), float(p1["latitude"])
 
-            # Map to pixels
             mx, my = trans.transform(lon, lat)
             py, px = src.index(mx, my)
-
-            # Debug candidate
-            if len(ship_annotations) < 3:
-                print(
-                    f"[DEBUG] Candidate {mmsi}: ({lon:.5f}, {lat:.5f}) -> Pixel ({px}, {py})"
-                )
 
             if not (0 <= px < width and 0 <= py < height):
                 continue
 
-            print(f"[DEBUG] HIT: MMSI {mmsi} at pixel {px},{py}")
-
             v_meta = fetch_vessel_metadata(mmsi)
             name = p1.get("vessel_name") or v_meta.get("vessel_name") or "Unknown"
             imo = v_meta.get("imo") or "N/A"
-            callsign = v_meta.get("callSign") or "N/A"
 
-            # Labels and collisions
-            text = f"NAME: {name}\nMMSI: {mmsi}\nIMO: {imo}\nCALL: {callsign}"
+            # Check if ship is within valid data extent (Alpha channel > 0)
+            # Sample alpha at pixel location
+            try:
+                # We need to sample from the source. To be efficient, we do a tiny read.
+                # Since we are already inside 'with rio.open(tif_path) as src', we can use it.
+                if src.count >= 4:
+                    samp_win = Window(px, py, 1, 1)
+                    alpha_samp = src.read(4, window=samp_win)
+                    if alpha_samp[0, 0] == 0:
+                        continue
+            except:
+                pass
+
+            text = f"NAME: {name}\nMMSI: {mmsi}\nIMO: {imo}"
             bbox = dummy_draw.textbbox((0, 0), text, font=font)
             tw, th, padding = bbox[2] - bbox[0], bbox[3] - bbox[1], 10
 
-            offsets = [
-                (50, -th // 2),
-                (50, 50),
-                (0, 50),
-                (-50 - tw, 50),
-                (-50 - tw, -th // 2),
-                (-50 - tw, -50 - th),
-                (0, -50 - th),
-                (50, -50 - th),
-            ]
+            offsets = [(50, -th // 2), (50, 50), (0, 50), (-50 - tw, 50), (-50 - tw, -th // 2), (-50 - tw, -50 - th), (0, -50 - th), (50, -50 - th)]
             best_pos = (px + 50, py - th // 2)
             for ox, oy in offsets:
                 tx, ty = px + ox, py + oy
-                rect = [
-                    tx - padding,
-                    ty - padding,
-                    tx + tw + padding,
-                    ty + th + padding,
-                ]
-                if tx < 0 or ty < 0 or tx + tw > width or ty + th > height:
-                    continue
-                if any(
-                    not (
-                        rect[2] < r[0]
-                        or rect[0] > r[2]
-                        or rect[3] < r[1]
-                        or rect[1] > r[3]
-                    )
-                    for r in placed_rects
-                ):
-                    continue
-                best_pos = (tx, ty)
-                placed_rects.append(rect)
-                break
+                rect = [tx - padding, ty - padding, tx + tw + padding, ty + th + padding]
+                if tx < 0 or ty < 0 or tx + tw > width or ty + th > height: continue
+                if any(not (rect[2] < r[0] or rect[0] > r[2] or rect[3] < r[1] or rect[1] > r[3]) for r in placed_rects): continue
+                best_pos = (tx, ty); placed_rects.append(rect); break
             else:
-                tx, ty = best_pos
-                placed_rects.append(
-                    [tx - padding, ty - padding, tx + tw + padding, ty + th + padding]
-                )
+                best_pos = (px + 50, py - th // 2); placed_rects.append([best_pos[0]-padding, best_pos[1]-padding, best_pos[0]+tw+padding, best_pos[1]+th+padding])
 
-            ship_annotations.append(
-                {
-                    "px": px,
-                    "py": py,
-                    "text_pos": best_pos,
-                    "text": text,
-                    "tw": tw,
-                    "th": th,
-                    "padding": padding,
-                }
-            )
+            # Store annotation with Y-bounds for strip selection
+            # Circle radius 15, padding 10
+            min_y = min(py - 15, best_pos[1] - padding)
+            max_y = max(py + 15, best_pos[1] + th + padding)
+            
+            ship_annotations.append({
+                "px": px, "py": py, "text_pos": best_pos, "text": text,
+                "tw": tw, "th": th, "padding": padding,
+                "min_y": min_y, "max_y": max_y
+            })
 
         if not ship_annotations:
             print("No vessels plotted on the image area.")
             return
 
-        # 2. Windowed Drawing
-        print(f"Plotting {len(ship_annotations)} vessels using windowed updates...")
-        shutil.copy(tif_path, out_path)
-
-        with rio.open(out_path, "r+") as dst:
-            for ann in ship_annotations:
-                px, py = ann["px"], ann["py"]
-                tx, ty = ann["text_pos"]
-                tw, th, padding = ann["tw"], ann["th"], ann["padding"]
-
-                min_x = int(min(px - 15, tx - padding) - 5)
-                max_x = int(max(px + 15, tx + tw + padding) + 5)
-                min_y = int(min(py - 15, ty - padding) - 5)
-                max_y = int(max(py + 15, ty + th + padding) + 5)
-
-                min_x, max_x = max(0, min_x), min(width, max_x)
-                min_y, max_y = max(0, min_y), min(height, max_y)
-
-                if max_x <= min_x or max_y <= min_y:
-                    continue
-
-                win = Window(min_x, min_y, max_x - min_x, max_y - min_y)
-                if dst.count >= 4:
-                    win_data = dst.read([1, 2, 3, 4], window=win)
+        print(f"Plotting {len(ship_annotations)} vessels using strip-based rendering...")
+        
+        with rio.open(out_path, "w", **profile) as dst:
+            strip_height = 2048
+            for y_start in range(0, height, strip_height):
+                y_end = min(y_start + strip_height, height)
+                h = y_end - y_start
+                win = Window(0, y_start, width, h)
+                
+                # Read strip
+                if src.count >= 4:
+                    strip_data = src.read([1, 2, 3, 4], window=win)
                 else:
-                    rgb = dst.read([1, 2, 3], window=win)
-                    alpha = np.ones((win.height, win.width), dtype=np.uint8) * 255
-                    win_data = np.concatenate([rgb, alpha[np.newaxis, ...]], axis=0)
+                    rgb = src.read([1, 2, 3], window=win)
+                    alpha = np.ones((h, width), dtype=np.uint8) * 255
+                    strip_data = np.concatenate([rgb, alpha[np.newaxis, ...]], axis=0)
+                
+                # Convert to PIL
+                strip_img = Image.fromarray(np.transpose(strip_data, (1, 2, 0)), "RGBA")
+                strip_draw = ImageDraw.Draw(strip_img, "RGBA")
+                
+                # Find ships that overlap this strip
+                # A ship overlaps if its annotation bounding box overlaps [y_start, y_end]
+                for ann in ship_annotations:
+                    if ann["max_y"] < y_start or ann["min_y"] > y_end:
+                        continue
+                    
+                    # Local coordinates
+                    lpx, lpy = ann["px"], ann["py"] - y_start
+                    ltx, lty = ann["text_pos"][0], ann["text_pos"][1] - y_start
+                    tw, th, padding = ann["tw"], ann["th"], ann["padding"]
+                    
+                    # Circle
+                    strip_draw.ellipse([lpx - 15, lpy - 15, lpx + 15, lpy + 15], outline=(255, 235, 59, 255), width=3)
+                    # Line
+                    strip_draw.line([lpx, lpy, ltx + (tw if lpx > ltx else 0), lty + th // 2], fill=(255, 235, 59, 180), width=2)
+                    # Text box
+                    strip_draw.rectangle([ltx - padding, lty - padding, ltx + tw + padding, lty + th + padding], fill=(0, 0, 0, 160), outline=(255, 235, 59, 200), width=1)
+                    strip_draw.text((ltx, lty), ann["text"], font=font, fill=(255, 235, 59, 255))
+                
+                # Write strip
+                dst.write(np.transpose(np.array(strip_img), (2, 0, 1)), window=win)
+                print(f"  Processed strip {y_start} to {y_end}...", end="\r", flush=True)
 
-                win_img = Image.fromarray(np.transpose(win_data, (1, 2, 0)), "RGBA")
-                win_draw = ImageDraw.Draw(win_img, "RGBA")
-
-                lpx, lpy = px - min_x, py - min_y
-                ltx, lty = tx - min_x, ty - min_y
-
-                win_draw.ellipse(
-                    [lpx - 15, lpy - 15, lpx + 15, lpy + 15],
-                    outline=(255, 235, 59, 255),
-                    width=3,
-                )
-                win_draw.line(
-                    [lpx, lpy, ltx + (tw if lpx > ltx else 0), lty + th // 2],
-                    fill=(255, 235, 59, 180),
-                    width=2,
-                )
-                win_draw.rectangle(
-                    [
-                        ltx - padding,
-                        lty - padding,
-                        ltx + tw + padding,
-                        lty + th + padding,
-                    ],
-                    fill=(0, 0, 0, 160),
-                    outline=(255, 235, 59, 200),
-                    width=1,
-                )
-                win_draw.text(
-                    (ltx, lty), ann["text"], font=font, fill=(255, 235, 59, 255)
-                )
-
-                final_win_data = np.transpose(np.array(win_img), (2, 0, 1))
-                dst.write(final_win_data, window=win)
-
-    print(f"AIS Correlation complete: {out_path}")
+    print(f"\nAIS Correlation complete: {out_path}")
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python ais_correlator.py <path_to_satellite_tif>")
         sys.exit(1)
-    target_tif_arg = sys.argv[1]
-    if not os.path.exists(target_tif_arg):
-        print(f"Error: File not found {target_tif_arg}")
+    target = sys.argv[1]
+    if not os.path.exists(target):
         sys.exit(1)
     try:
-        metadata_main = get_metadata(target_tif_arg)
-        ais_data_main = fetch_ais_data(metadata_main)
-        if not ais_data_main:
-            print("No AIS data found for this time/area.")
-        else:
-            plot_on_image(target_tif_arg, ais_data_main, metadata_main["time"])
-    except Exception as e_main:
-        print(f"Error during AIS correlation: {e_main}")
+        meta = get_metadata(target)
+        data = fetch_ais_data(meta)
+        if data:
+            plot_on_image(target, data, meta["time"])
+    except Exception as e:
+        print(f"Error: {e}")
         sys.exit(1)
