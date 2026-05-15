@@ -13,12 +13,21 @@
 <body>
     <div id="map"></div>
     
+    <button id="sidebar-toggle" class="sidebar-toggle-btn">
+        <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M15.41 16.59L10.83 12l4.58-4.59L14 6l-6 6 6 6 1.41-1.41z"/></svg>
+    </button>
+
     <div id="logo-container">
         <img src="logo.png" alt="Logo">
     </div>
 
     <div id="legend-panel" class="map-overlay">
         <!-- Legend content will appear here -->
+    </div>
+
+    <div id="bbox-widget" class="map-overlay">
+        <span class="bbox-label">BBOX:</span>
+        <span id="bbox-value" class="bbox-value">Loading...</span>
     </div>
 
     <div id="sidebar">
@@ -36,8 +45,12 @@
             <div class="action-row">
                 <button id="deselect-all" class="deselect-btn" data-i18n-title="clear" data-i18n="clear">Tyhjennä</button>
                 <button id="zoom-available" class="action-btn" data-i18n-title="zoom" data-i18n="zoom">Zoom</button>
+            </div>
+            <div class="action-row">
                 <button id="identify-optical" class="toggle-btn" data-i18n-title="optical" data-i18n="optical">Optinen</button>
                 <button id="identify-radar" class="toggle-btn" data-i18n-title="radar" data-i18n="radar">Tutka</button>
+                <button id="toggle-fullscreen" class="action-btn" data-i18n-title="fullscreen"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg></button>
+                <button id="map-screenshot" class="action-btn" data-i18n-title="screenshot" data-i18n="screenshot">📷</button>
             </div>
         </div>
         <div id="base-picker" class="base-area">

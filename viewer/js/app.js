@@ -44,11 +44,9 @@ function translateUI() {
 }
 
 // --- LAYER ORDERING (Z-Indices) ---
-// Satellite imagery uses timestamp / 100000 (currently ~17 million).
-// UI and Overlays must be significantly higher to stay on top.
-const Z_INDEX_IDENTIFY = 100000000; // 100M
-const Z_INDEX_HIGHLIGHT = 110000000; // 110M
-const Z_INDEX_OVERLAYS = 200000000; // 200M
+const Z_INDEX_IDENTIFY = 100000000;
+const Z_INDEX_HIGHLIGHT = 110000000;
+const Z_INDEX_OVERLAYS = 200000000;
 
 const S2_PRIORITY = ["TCI", "TCI-AIS", "NIRFC", "AP", "NDBI_CLEAN", "NDBI", "NDRE", "NDVI", "NBR", "CAMO"];
 const S1_PRIORITY = ["VV", "VH", "RATIO", "RATIO-AIS"];
@@ -81,28 +79,64 @@ let s2SortMode = 'product'; // 'product' or 'grid'
 let identifyOpticalLayer;
 let identifyRadarLayer;
 let masterLegends = {}; 
-let sentinelAttribution = new ol.source.Vector({
-    attributions: '' // Starts empty
-});
+let sentinelAttribution = new ol.source.Vector({ attributions: '' });
+
+// --- SETTINGS PERSISTENCE ---
+const SETTINGS_KEY = 'sat_viewer_settings';
+
+function saveSettings() {
+    if (!map) return;
+    const view = map.getView();
+    const settings = {
+        center: view.getCenter(),
+        zoom: view.getZoom(),
+        activeLayerPaths: Object.keys(activeLayers).filter(path => activeLayers[path].layer.getVisible()),
+        s2SortMode: s2SortMode,
+        expandedGroups: Array.from(document.querySelectorAll('.sat-group:not(.collapsed), .grid-group:not(.collapsed), .prod-group:not(.collapsed)'))
+            .map(el => el.id).filter(id => !!id),
+        identifyOptical: !!identifyOpticalLayer,
+        identifyRadar: !!identifyRadarLayer,
+        baseLayer: Object.keys(baseLayers).find(key => baseLayers[key].getVisible()) || 'dark',
+        sidebarCollapsed: document.body.classList.contains('sidebar-collapsed')
+    };
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+}
+
+function loadSettings() {
+    try {
+        const saved = localStorage.getItem(SETTINGS_KEY);
+        if (saved) {
+            const parsed = JSON.parse(saved);
+            if (parsed.sidebarCollapsed) {
+                document.body.classList.add('sidebar-collapsed');
+            }
+            return parsed;
+        }
+    } catch (e) { return null; }
+    return null;
+}
 
 const baseLayers = {
     'dark': new ol.layer.Tile({
         source: new ol.source.XYZ({
             url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
-            attributions: 'Tiles &copy; Esri',
-            maxZoom: 16
+            attributions: 'Tiles &copy; Esri.',
+            maxZoom: 16,
+            crossOrigin: 'anonymous'
         }),
         visible: true
     }),
     'osm': new ol.layer.Tile({
-        source: new ol.source.OSM(),
+        source: new ol.source.OSM({
+            crossOrigin: 'anonymous'
+        }),
         visible: false
     })
 };
 
 // --- INITIALIZATION ---
 document.addEventListener('DOMContentLoaded', () => {
-    setLanguage(currentLang); // This will call translateUI and other updates
+    setLanguage(currentLang);
     initMap();
     initBasePicker();
     loadConfig();
@@ -110,18 +144,17 @@ document.addEventListener('DOMContentLoaded', () => {
     loadLegends();
     checkLogo();
 
-    // Action buttons
-    const deselectBtn = document.getElementById('deselect-all');
-    if (deselectBtn) deselectBtn.onclick = deselectAllLayers;
-
-    const zoomBtn = document.getElementById('zoom-available');
-    if (zoomBtn) zoomBtn.onclick = zoomToAvailable;
-
-    const optBtn = document.getElementById('identify-optical');
-    if (optBtn) optBtn.onclick = toggleIdentifyOptical;
-
-    const radBtn = document.getElementById('identify-radar');
-    if (radBtn) radBtn.onclick = toggleIdentifyRadar;
+    document.getElementById('deselect-all').onclick = deselectAllLayers;
+    document.getElementById('zoom-available').onclick = zoomToAvailable;
+    document.getElementById('identify-optical').onclick = toggleIdentifyOptical;
+    document.getElementById('identify-radar').onclick = toggleIdentifyRadar;
+    document.getElementById('toggle-fullscreen').onclick = toggleFullscreen;
+    document.getElementById('map-screenshot').onclick = takeScreenshot;
+    document.getElementById('sidebar-toggle').onclick = () => {
+        document.body.classList.toggle('sidebar-collapsed');
+        saveSettings();
+        setTimeout(() => map.updateSize(), 350); // Resize map after transition
+    };
 });
 
 function deselectAllLayers() {
@@ -129,9 +162,7 @@ function deselectAllLayers() {
     checkboxes.forEach(chk => {
         if (chk.checked) {
             chk.checked = false;
-            // Trigger the change manually to run toggleLayer
-            const event = new Event('change');
-            chk.dispatchEvent(event);
+            chk.dispatchEvent(new Event('change'));
         }
     });
 }
@@ -139,153 +170,104 @@ function deselectAllLayers() {
 function updateAcquisitionRange(layers) {
     const rangeEl = document.getElementById('acq-range');
     if (!rangeEl || !layers || layers.length === 0) return;
-
-    const times = layers
-        .map(l => l.acquisition_time)
-        .filter(t => t && t !== "Unknown")
-        .sort();
-
+    const times = layers.map(l => l.acquisition_time).filter(t => t && t !== "Unknown").sort();
     if (times.length > 0) {
-        const start = times[0];
-        const end = times[times.length - 1];
         const t = UI_TRANSLATIONS[currentLang];
-        rangeEl.innerText = `${t.acq_range}: (${start} - ${end})`;
+        rangeEl.innerText = `${t.acq_range}: (${times[0]} - ${times[times.length - 1]})`;
     }
 }
 
 function updateNextOverflight(overflights) {
     const nextEl = document.getElementById('next-overflight');
     if (!nextEl || !overflights || !Array.isArray(overflights)) return;
-
     const t = UI_TRANSLATIONS[currentLang];
-    let html = "";
-    overflights.forEach(p => {
-        if (html) html += "<br>";
-        html += `${t.next} ${p.label}: ${p.time}`;
-    });
-    nextEl.innerHTML = html;
+    nextEl.innerHTML = overflights.map(p => `${t.next} ${p.label}: ${p.time}`).join("<br>");
 }
 
 function updateGroupMarkers() {
-    // Update Product Groups (e.g. TCI, NDVI)
-    const prodGroups = document.querySelectorAll('.prod-group');
-    prodGroups.forEach(group => {
-        const hasActive = group.querySelectorAll('input:checked').length > 0;
-        group.classList.toggle('has-active', hasActive);
-    });
-
-    // Update Grid Groups
-    const gridGroups = document.querySelectorAll('.grid-group');
-    gridGroups.forEach(group => {
-        const hasActive = group.querySelectorAll('input:checked').length > 0;
-        group.classList.toggle('has-active', hasActive);
-    });
-
-    // Update Main Categories (e.g. S1, S2, FUSED)
-    const satGroups = document.querySelectorAll('.sat-group');
-    satGroups.forEach(group => {
-        const hasActive = group.querySelectorAll('input:checked').length > 0;
-        group.classList.toggle('has-active', hasActive);
+    document.querySelectorAll('.sat-group, .grid-group, .prod-group').forEach(group => {
+        group.classList.toggle('has-active', group.querySelectorAll('input:checked').length > 0);
     });
 }
 
+function updateBBoxWidget() {
+    const el = document.getElementById('bbox-value');
+    if (!el || !map) return;
+    const extent = map.getView().calculateExtent(map.getSize());
+    const bbox = ol.proj.transformExtent(extent, 'EPSG:3857', 'EPSG:4326');
+    // Format: minLon,minLat,maxLon,maxLat with 4 decimal places
+    el.innerText = bbox.map(v => v.toFixed(4)).join(',');
+}
+
 function initMap() {
-    // OpenLayers Map initialization
+    const saved = loadSettings();
     map = new ol.Map({
         target: 'map',
-        controls: ol.control.defaults.defaults().extend([
-            new ol.control.Attribution({
-                collapsible: false
-            })
-        ]),
-        layers: [
-            baseLayers.dark,
-            baseLayers.osm
-        ],
+        controls: ol.control.defaults.defaults().extend([new ol.control.Attribution({ collapsible: false })]),
+        layers: [baseLayers.dark, baseLayers.osm],
         view: new ol.View({
-            center: ol.proj.fromLonLat([24.9384, 60.1699]),
-            zoom: 8
+            center: saved ? saved.center : ol.proj.fromLonLat([24.9384, 60.1699]),
+            zoom: saved ? saved.zoom : 8
         })
     });
 
-    // Dummy layer to hold the dynamic Sentinel attribution
-    const attrLayer = new ol.layer.Vector({
-        source: sentinelAttribution
+    if (saved && saved.baseLayer) {
+        Object.keys(baseLayers).forEach(key => baseLayers[key].setVisible(key === saved.baseLayer));
+    }
+    map.on('moveend', () => {
+        saveSettings();
+        updateLegends();
+        updateBBoxWidget();
     });
-    map.addLayer(attrLayer);
-
-    // Scale Line
+    map.addLayer(new ol.layer.Vector({ source: sentinelAttribution }));
     map.addControl(new ol.control.ScaleLine({ units: 'metric' }));
+    updateBBoxWidget();
 
-    // Hover Preview Source & Layer (Sidebar hover)
     hoverSource = new ol.source.Vector();
-    const hoverLayer = new ol.layer.Vector({
-        source: hoverSource,
-        zIndex: Z_INDEX_HIGHLIGHT,
+
+    map.addLayer(new ol.layer.Vector({
+        source: hoverSource, zIndex: Z_INDEX_HIGHLIGHT,
         style: new ol.style.Style({
             stroke: new ol.style.Stroke({ color: '#00bcd4', width: 3 }),
             fill: new ol.style.Fill({ color: 'rgba(0, 188, 212, 0.1)' })
         })
-    });
-    map.addLayer(hoverLayer);
+    }));
 
-    // Highlight Source & Layer (Map hover on identify layers)
     highlightSource = new ol.source.Vector();
-    const highlightLayer = new ol.layer.Vector({
-        source: highlightSource,
-        zIndex: Z_INDEX_HIGHLIGHT,
-        style: (feature) => {
-            const isOptical = feature.get('isOptical');
-            return new ol.style.Style({
-                stroke: new ol.style.Stroke({ color: '#ffeb3b', width: 3 }),
-                fill: new ol.style.Fill({ color: 'rgba(255, 235, 59, 0.2)' }),
-                text: new ol.style.Text({
-                    text: feature.get('label'),
-                    font: isOptical ? 'bold 14px sans-serif' : '11px sans-serif',
-                    fill: new ol.style.Fill({ color: '#ffeb3b' }),
-                    stroke: new ol.style.Stroke({ color: '#000', width: 3 })
-                })
-            });
-        }
-    });
-    map.addLayer(highlightLayer);
+    map.addLayer(new ol.layer.Vector({
+        source: highlightSource, zIndex: Z_INDEX_HIGHLIGHT,
+        style: (f) => new ol.style.Style({
+            stroke: new ol.style.Stroke({ color: '#ffeb3b', width: 3 }),
+            fill: new ol.style.Fill({ color: 'rgba(255, 235, 59, 0.2)' }),
+            text: new ol.style.Text({
+                text: f.get('label'), font: f.get('isOptical') ? 'bold 14px sans-serif' : '11px sans-serif',
+                fill: new ol.style.Fill({ color: '#ffeb3b' }), stroke: new ol.style.Stroke({ color: '#000', width: 3 })
+            })
+        })
+    }));
 
-    // Pointer move listener for identify highlights
     map.on('pointermove', (evt) => {
         if (evt.dragging) return;
-        
         highlightSource.clear();
-        const pixel = map.getEventPixel(evt.originalEvent);
-        const feature = map.forEachFeatureAtPixel(pixel, (f, layer) => {
-            if (layer === identifyOpticalLayer || layer === identifyRadarLayer) {
-                return f;
-            }
+        const feature = map.forEachFeatureAtPixel(map.getEventPixel(evt.originalEvent), (f, l) => {
+            if (l === identifyOpticalLayer || l === identifyRadarLayer) return f;
         });
-
         if (feature) {
-            const isOptical = identifyOpticalLayer && identifyOpticalLayer.getSource().getFeatures().includes(feature);
+            const isOpt = identifyOpticalLayer && identifyOpticalLayer.getSource().getFeatures().includes(feature);
             const clone = feature.clone();
-            clone.set('isOptical', isOptical);
+            clone.set('isOptical', isOpt);
             highlightSource.addFeature(clone);
             map.getTargetElement().style.cursor = 'pointer';
-        } else {
-            map.getTargetElement().style.cursor = '';
-        }
+        } else map.getTargetElement().style.cursor = '';
     });
 
-    // Click listener for identify features
     map.on('singleclick', (evt) => {
-        const pixel = map.getEventPixel(evt.originalEvent);
-        const feature = map.forEachFeatureAtPixel(pixel, (f, layer) => {
-            if (layer === identifyOpticalLayer || layer === identifyRadarLayer) return f;
+        const feature = map.forEachFeatureAtPixel(map.getEventPixel(evt.originalEvent), (f, l) => {
+            if (l === identifyOpticalLayer || l === identifyRadarLayer) return f;
         });
-
         if (feature) {
-            if (feature.get('isOptical')) {
-                jumpToSidebar('S2', 'TCI', feature.get('label'));
-            } else if (feature.get('isRadar')) {
-                jumpToSidebar('S1', 'RATIO', feature.get('time'));
-            }
+            if (feature.get('isOptical')) jumpToSidebar('S2', 'TCI', feature.get('label'));
+            else if (feature.get('isRadar')) jumpToSidebar('S1', 'RATIO', feature.get('time'));
         }
     });
 }
@@ -293,7 +275,6 @@ function initMap() {
 function jumpToSidebar(sat, prod, identifier) {
     const group = document.getElementById(`group-${sat}`);
     if (group) group.classList.remove('collapsed');
-
     if (sat === 'S2' && s2SortMode === 'grid') {
         const gridGroup = document.getElementById(`grid-S2-${identifier}`);
         if (gridGroup) {
@@ -304,28 +285,15 @@ function jumpToSidebar(sat, prod, identifier) {
         }
         return;
     }
-
     const prodGroup = document.getElementById(`prod-${sat}-${prod}`);
     if (prodGroup) {
         prodGroup.classList.remove('collapsed');
-        
-        // Find the layer item
-        let target;
-        if (sat === 'S2') {
-            target = prodGroup.querySelector(`.layer-item[data-grid="${identifier}"]`);
-        } else {
-            target = prodGroup.querySelector(`.layer-item[data-time="${identifier}"]`);
-        }
-        
+        const target = prodGroup.querySelector(sat === 'S2' ? `.layer-item[data-grid="${identifier}"]` : `.layer-item[data-time="${identifier}"]`);
         if (target) {
             target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            // Highlight the target temporarily
             target.classList.add('jump-highlight');
             setTimeout(() => target.classList.remove('jump-highlight'), 2000);
-        } else {
-            // If specific layer not found, just scroll to the product group
-            prodGroup.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
+        } else prodGroup.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 }
 
@@ -333,22 +301,15 @@ function initBasePicker() {
     const container = document.getElementById('base-picker');
     container.innerHTML = '';
     const t = UI_TRANSLATIONS[currentLang];
-    const options = [
-        { id: 'dark', label: t.dark },
-        { id: 'osm', label: t.map }
-    ];
-
-    options.forEach(opt => {
+    ['dark', 'osm'].forEach(id => {
         const btn = document.createElement('button');
-        const isVisible = baseLayers[opt.id].getVisible();
-        btn.className = 'base-btn' + (isVisible ? ' active' : '');
-        btn.innerText = opt.label;
+        btn.className = 'base-btn' + (baseLayers[id].getVisible() ? ' active' : '');
+        btn.innerText = (id === 'dark' ? t.dark : t.map);
         btn.onclick = () => {
-            Object.keys(baseLayers).forEach(key => {
-                baseLayers[key].setVisible(key === opt.id);
-            });
+            Object.keys(baseLayers).forEach(key => baseLayers[key].setVisible(key === id));
             container.querySelectorAll('.base-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
+            saveSettings();
         };
         container.appendChild(btn);
     });
@@ -366,727 +327,556 @@ async function loadConfig() {
         const resp = await fetch(CONFIG_URL);
         if (resp.ok) {
             const config = await resp.json();
-            if (config.overlays && Array.isArray(config.overlays)) {
-                loadOverlays(config.overlays);
-            }
+            if (config.overlays) loadOverlays(config.overlays);
         }
-    } catch (e) {
-        console.warn("Could not load config:", e);
-    }
+    } catch (e) {}
 }
 
 function loadOverlays(configs) {
     configs.forEach((cfg, index) => {
-        const isObject = typeof cfg === 'object' && cfg !== null;
-        const url = isObject ? cfg.url : cfg;
-        
-        // Style defaults
-        const color = (isObject && cfg.color) ? cfg.color : '#ffeb3b';
-        const width = (isObject && cfg.lineWidth) ? cfg.lineWidth : 2.5;
-        const markerSize = (isObject && cfg.markerSize) ? cfg.markerSize : 6;
-        
-        let lineDash = null;
-        if (isObject && cfg.lineStyle) {
-            if (cfg.lineStyle === 'dashed') lineDash = [10, 10];
-            else if (cfg.lineStyle === 'dotted') lineDash = [2, 7];
-        }
+        const isObj = typeof cfg === 'object' && cfg !== null;
+        const url = isObj ? cfg.url : cfg;
+        const color = (isObj && cfg.color) ? cfg.color : '#ffeb3b';
+        const width = (isObj && cfg.lineWidth) ? cfg.lineWidth : 2.5;
+        const markerSize = (isObj && cfg.markerSize) ? cfg.markerSize : 6;
+        let dash = null;
+        if (isObj && cfg.lineStyle === 'dashed') dash = [10, 10];
+        else if (isObj && cfg.lineStyle === 'dotted') dash = [2, 7];
 
-        const source = new ol.source.Vector({
-            url: url,
-            format: new ol.format.GeoJSON()
-        });
-
-        const layer = new ol.layer.Vector({
-            source: source,
+        map.addLayer(new ol.layer.Vector({
+            source: new ol.source.Vector({ url: url, format: new ol.format.GeoJSON() }),
             zIndex: Z_INDEX_OVERLAYS + index,
-            style: function(feature) {
-                const geometry = feature.getGeometry();
-                const type = geometry.getType();
-                
-                if (type === 'Point' || type === 'MultiPoint') {
-                    const label = feature.get('label') || feature.get('name') || feature.get('id') || '';
+            style: (f) => {
+                const type = f.getGeometry().getType();
+                if (type.includes('Point')) {
                     return new ol.style.Style({
-                        image: new ol.style.Circle({
-                            radius: markerSize,
-                            fill: new ol.style.Fill({ color: color }),
-                            stroke: new ol.style.Stroke({ color: '#000', width: 2 })
-                        }),
-                        text: new ol.style.Text({
-                            text: label,
-                            font: 'bold 13px sans-serif',
-                            fill: new ol.style.Fill({ color: '#fff' }),
-                            stroke: new ol.style.Stroke({ color: '#000', width: 3 }),
-                            offsetY: -(markerSize + 10),
-                            overflow: true
-                        })
-                    });
-                } else {
-                    // Polygons and Multipolygons (and LineStrings) - Outline only
-                    return new ol.style.Style({
-                        stroke: new ol.style.Stroke({
-                            color: color,
-                            width: width,
-                            lineDash: lineDash
-                        }),
-                        fill: new ol.style.Fill({
-                            color: 'rgba(255, 235, 59, 0)' // Invisible fill
-                        })
+                        image: new ol.style.Circle({ radius: markerSize, fill: new ol.style.Fill({ color: color }), stroke: new ol.style.Stroke({ color: '#000', width: 2 }) }),
+                        text: new ol.style.Text({ text: f.get('label') || f.get('name') || '', font: 'bold 13px sans-serif', fill: new ol.style.Fill({ color: '#fff' }), stroke: new ol.style.Stroke({ color: '#000', width: 3 }), offsetY: -(markerSize + 10), overflow: true })
                     });
                 }
+                return new ol.style.Style({ stroke: new ol.style.Stroke({ color: color, width: width, lineDash: dash }), fill: new ol.style.Fill({ color: 'rgba(0,0,0,0)' }) });
             }
-        });
-        map.addLayer(layer);
+        }));
     });
 }
 
 async function loadLegends() {
     try {
-        const url = window.location.origin + window.location.pathname.replace('index.html', '') + LEGENDS_URL;
-        const response = await fetch(url);
-        if (response.ok) masterLegends = await response.json();
+        const resp = await fetch(window.location.origin + window.location.pathname.replace('index.html', '') + LEGENDS_URL);
+        if (resp.ok) masterLegends = await resp.json();
     } catch (e) {}
 }
 
 async function loadInventory() {
     const picker = document.getElementById('layer-picker');
-    const progressBar = document.getElementById('progress-bar');
-    const loadingText = document.getElementById('loading-text');
     const t = UI_TRANSLATIONS[currentLang];
+    const saved = loadSettings();
+    if (saved && saved.s2SortMode) s2SortMode = saved.s2SortMode;
 
     try {
         const response = await fetch(INVENTORY_URL);
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-
-        const contentLength = response.headers.get('content-length');
-        const total = parseInt(contentLength, 10);
-        let loaded = 0;
-
-        const reader = response.body.getReader();
-        const chunks = [];
-        
-        while(true) {
-            const {done, value} = await reader.read();
-            if (done) break;
-            chunks.push(value);
-            loaded += value.length;
-            if (total) {
-                const percent = Math.round((loaded / total) * 50); // First 50% for download
-                progressBar.style.width = `${percent}%`;
-                loadingText.innerText = `${t.fetching} ${Math.round((loaded / 1024 / 1024))} MB`;
-            }
-        }
-
-        loadingText.innerText = t.processing;
-        const allChunks = new Uint8Array(loaded);
-        let position = 0;
-        for (const chunk of chunks) {
-            allChunks.set(chunk, position);
-            position += chunk.length;
-        }
-
-        const decoder = new TextDecoder("utf-8");
-        const jsonString = decoder.decode(allChunks);
-        const data = JSON.parse(jsonString);
+        if (!response.ok) throw new Error(response.status);
+        const data = await response.json();
 
         if (data.layers && data.layers.length > 0) {
             inventoryData = data.layers;
             updateAcquisitionRange(data.layers);
             updateNextOverflight(data.next_overflights);
             renderLayerPicker(data.layers);
+            
+            if (saved && saved.activeLayerPaths) {
+                saved.activeLayerPaths.forEach(path => {
+                    const meta = inventoryData.find(l => l.path === path);
+                    const chk = document.getElementById(`chk-${path.replace(/[^a-zA-Z0-9]/g, '_')}`);
+                    if (meta && chk) {
+                        chk.checked = true;
+                        toggleLayer(meta, true, chk.closest('.layer-item'), true);
+                    }
+                });
+            }
+            if (saved) {
+                if (saved.identifyOptical) toggleIdentifyOptical();
+                if (saved.identifyRadar) toggleIdentifyRadar();
+            }
         } else {
             picker.innerHTML = `<div id="loading">${t.no_images}</div>`;
             if (data.next_overflights) updateNextOverflight(data.next_overflights);
         }
-    } catch (e) {
-        console.error("Inventory error:", e);
-        picker.innerHTML = `<div id="loading">${t.error_loading} ${e.message}</div>`;
-    }
+    } catch (e) { picker.innerHTML = `<div id="loading">${t.error_loading}</div>`; }
 }
 
 function zoomToAvailable() {
-    if (!inventoryData || inventoryData.length === 0) return;
     let extent = ol.extent.createEmpty();
-    inventoryData.forEach(layer => {
-        const b = layer.bounds;
-        if (!b) return;
-        const layerExtent = ol.extent.boundingExtent([
-            ol.proj.fromLonLat([b[0][1], b[0][0]]),
-            ol.proj.fromLonLat([b[1][1], b[1][0]])
-        ]);
-        ol.extent.extend(extent, layerExtent);
+    inventoryData.forEach(l => {
+        if (!l.bounds) return;
+        ol.extent.extend(extent, ol.extent.boundingExtent([ol.proj.fromLonLat([l.bounds[0][1], l.bounds[0][0]]), ol.proj.fromLonLat([l.bounds[1][1], l.bounds[1][0]])]));
     });
-    if (!ol.extent.isEmpty(extent)) {
-        map.getView().fit(extent, { padding: [50, 50, 50, 50], duration: 1000 });
+    if (!ol.extent.isEmpty(extent)) map.getView().fit(extent, { padding: [50, 50, 50, 50], duration: 1000 });
+}
+
+function toggleFullscreen() {
+    if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(err => {
+            console.error(`Error attempting to enable full-screen mode: ${err.message}`);
+        });
+    } else {
+        document.exitFullscreen();
     }
+}
+
+function takeScreenshot() {
+    document.getElementById('map-spinner').style.display = 'block';
+    
+    // Perform a synchronous render to ensure canvases are up to date
+    map.renderSync();
+    
+    // Execute immediately after renderSync for maximum speed
+    const mapCanvas = document.createElement('canvas');
+    const size = map.getSize();
+    mapCanvas.width = size[0];
+    mapCanvas.height = size[1];
+    const mapContext = mapCanvas.getContext('2d');
+    
+    // 1. Draw Map Layers
+    const layers = document.querySelectorAll('.ol-layer canvas, canvas.ol-layer');
+    layers.forEach(canvas => {
+        if (canvas.width > 0) {
+            const opacity = canvas.parentNode.style.opacity || canvas.style.opacity;
+            mapContext.globalAlpha = opacity === '' ? 1 : Number(opacity);
+            
+            const style = window.getComputedStyle(canvas);
+            const transform = style.getPropertyValue('transform');
+            if (transform !== 'none') {
+                const matrix = transform.match(/^matrix\(([^\(]*)\)$/)[1].split(',').map(Number);
+                CanvasRenderingContext2D.prototype.setTransform.apply(mapContext, matrix);
+            }
+            mapContext.drawImage(canvas, 0, 0);
+            mapContext.setTransform(1, 0, 0, 1, 0, 0);
+        }
+    });
+    
+    mapContext.globalAlpha = 1;
+
+    // 2. Draw Logo
+    const logoCont = document.getElementById('logo-container');
+    if (logoCont && window.getComputedStyle(logoCont).display !== 'none') {
+        const logoImg = logoCont.querySelector('img');
+        if (logoImg && logoImg.complete) {
+            mapContext.drawImage(logoImg, 20, 15, logoImg.width, logoImg.height);
+        }
+    }
+
+    // 3. Draw Legend Panel
+    const legendPanel = document.getElementById('legend-panel');
+    if (legendPanel && legendPanel.children.length > 0) {
+        const mapRect = document.getElementById('map').getBoundingClientRect();
+        const panelRect = legendPanel.getBoundingClientRect();
+        
+        const bgX = panelRect.left - mapRect.left;
+        const bgY = panelRect.top - mapRect.top;
+        const bgW = panelRect.width;
+        const bgH = panelRect.height;
+
+        mapContext.fillStyle = 'rgba(26, 26, 26, 0.9)';
+        mapContext.fillRect(bgX, bgY, bgW, bgH);
+        
+        const allElements = legendPanel.querySelectorAll('*');
+        allElements.forEach(el => {
+            const rect = el.getBoundingClientRect();
+            const x = rect.left - mapRect.left;
+            const y = rect.top - mapRect.top;
+            const style = window.getComputedStyle(el);
+            const width = rect.width;
+            const height = rect.height;
+
+            // A. Draw Borders
+            const bTop = parseFloat(style.borderTopWidth);
+            if (bTop > 0 && style.borderTopStyle !== 'none') {
+                mapContext.strokeStyle = style.borderTopColor;
+                mapContext.lineWidth = bTop;
+                mapContext.beginPath();
+                mapContext.moveTo(x, y);
+                mapContext.lineTo(x + width, y);
+                mapContext.stroke();
+            }
+
+            // B. Draw Backgrounds
+            const bg = style.backgroundColor;
+            const grad = style.backgroundImage;
+
+            if (height > 0 && width > 0) {
+                let hasDrawnBg = false;
+                if (grad && grad.includes('linear-gradient')) {
+                    const colors = grad.match(/rgb\([^)]+\)|rgba\([^)]+\)|#[a-fA-F0-9]{3,6}/g);
+                    if (colors) {
+                        const canvasGrad = mapContext.createLinearGradient(x, 0, x + width, 0);
+                        colors.forEach((color, idx) => canvasGrad.addColorStop(idx / (colors.length - 1), color));
+                        mapContext.fillStyle = canvasGrad;
+                        mapContext.fillRect(x, y, width, height);
+                        hasDrawnBg = true;
+                    }
+                } else if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent' && bg !== 'rgb(26, 26, 26)') {
+                    mapContext.fillStyle = bg;
+                    mapContext.fillRect(x, y, width, height);
+                    hasDrawnBg = true;
+                }
+                
+                if (hasDrawnBg && (width > 50 || el.style.border)) {
+                    mapContext.strokeStyle = '#444';
+                    mapContext.lineWidth = 1;
+                    mapContext.strokeRect(x, y, width, height);
+                }
+            }
+
+            // C. Draw Text with wrapping and padding support
+            let nodeText = "";
+            for (let i = 0; i < el.childNodes.length; i++) {
+                if (el.childNodes[i].nodeType === 3) {
+                    nodeText += el.childNodes[i].nodeValue.trim();
+                }
+            }
+
+            if (nodeText) {
+                mapContext.fillStyle = style.color || '#fff';
+                const weight = style.fontWeight === 'bold' || parseInt(style.fontWeight) >= 600 ? 'bold' : 'normal';
+                const size = style.fontSize || '10px';
+                const font = style.fontFamily || 'sans-serif';
+                mapContext.font = `${weight} ${size} ${font}`;
+                
+                const pTop = parseFloat(style.paddingTop) || 0;
+                const pLeft = parseFloat(style.paddingLeft) || 0;
+                
+                const lineHeight = parseFloat(size) * 1.2;
+                const maxWidth = panelRect.width - (rect.left - panelRect.left) - (parseFloat(style.paddingRight) || 0);
+                
+                let currentY = y + pTop + parseFloat(size) * 0.8;
+                const words = nodeText.split(' ');
+                let line = '';
+
+                for (let n = 0; n < words.length; n++) {
+                    const testLine = line + words[n] + ' ';
+                    const metrics = mapContext.measureText(testLine);
+                    if (metrics.width > maxWidth && n > 0) {
+                        mapContext.fillText(line, x + pLeft, currentY);
+                        line = words[n] + ' ';
+                        currentY += lineHeight;
+                    } else {
+                        line = testLine;
+                    }
+                }
+                mapContext.fillText(line, x + pLeft, currentY);
+            }
+        });
+    }
+
+    // 4. Draw Scale Line
+    const scaleLine = document.querySelector('.ol-scale-line-inner');
+    if (scaleLine) {
+        const text = scaleLine.innerText;
+        const width = scaleLine.offsetWidth;
+        const x = 330; // Matches CSS left: 330px
+        const y = size[1] - 25;
+
+        
+        mapContext.fillStyle = 'rgba(0, 0, 0, 0.8)';
+        mapContext.fillRect(x - 5, y - 15, width + 10, 20);
+        mapContext.strokeStyle = '#ffeb3b';
+        mapContext.lineWidth = 2;
+        mapContext.beginPath();
+        mapContext.moveTo(x, y);
+        mapContext.lineTo(x, y + 5);
+        mapContext.lineTo(x + width, y + 5);
+        mapContext.lineTo(x + width, y);
+        mapContext.stroke();
+        
+        mapContext.fillStyle = '#ffeb3b';
+        mapContext.font = 'bold 11px sans-serif';
+        mapContext.fillText(text, x + 5, y - 2);
+    }
+
+    // 5. Draw Attributions
+    const attrSet = new Set();
+    document.querySelectorAll('.ol-attribution ul li').forEach(li => {
+        let text = li.innerText.trim();
+        text = text.replace(' Tiles © Esri.', '© Esri');
+        if (text) attrSet.add(text);
+    });
+    const sentAttr = sentinelAttribution.getAttributions()({}).join(' ');
+    if (sentAttr) attrSet.add(sentAttr);
+    
+    const attrText = Array.from(attrSet).join(' | ');
+    if (attrText) {
+        mapContext.font = '10px monospace';
+        const textWidth = mapContext.measureText(attrText).width;
+        mapContext.fillStyle = 'rgba(0, 0, 0, 0.8)';
+        mapContext.fillRect(size[0] - textWidth - 25, size[1] - 25, textWidth + 15, 18);
+        mapContext.fillStyle = '#ffeb3b';
+        mapContext.fillText(attrText, size[0] - textWidth - 17, size[1] - 13);
+    }
+
+    const link = document.createElement('a');
+    link.download = `sat-screenshot-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+    link.href = mapCanvas.toDataURL();
+    link.click();
+    document.getElementById('map-spinner').style.display = 'none';
 }
 
 function toggleIdentifyOptical() {
     const btn = document.getElementById('identify-optical');
     if (identifyOpticalLayer) {
-        map.removeLayer(identifyOpticalLayer);
-        identifyOpticalLayer = null;
-        if (highlightSource) highlightSource.clear();
-        btn.classList.remove('active');
-        return;
+        map.removeLayer(identifyOpticalLayer); identifyOpticalLayer = null; highlightSource.clear();
+        btn.classList.remove('active'); saveSettings(); return;
     }
-
     const source = new ol.source.Vector();
     const grids = {};
-
-    inventoryData.forEach(layer => {
-        if (!layer.product.startsWith('S2')) return;
-        const grid = getGridSquare(layer);
-        if (!grid) return;
-        // Prefer TCI for the 'canonical' layer for the grid if possible
-        if (!grids[grid] || layer.product === 'S2-TCI') {
-            grids[grid] = layer;
-        }
+    inventoryData.forEach(l => {
+        if (!l.product.startsWith('S2')) return;
+        const grid = getGridSquare(l);
+        if (!grid || (!grids[grid] || l.product === 'S2-TCI')) grids[grid] = l;
     });
-
-    Object.keys(grids).forEach(gridId => {
-        const layer = grids[gridId];
-        let feature;
-        if (layer.footprint) {
-            const format = new ol.format.GeoJSON();
-            feature = format.readFeature(layer.footprint, {
-                dataProjection: 'EPSG:4326',
-                featureProjection: 'EPSG:3857'
-            });
-        } else {
-            const b = layer.bounds;
-            const poly = new ol.geom.Polygon([[
-                ol.proj.fromLonLat([b[0][1], b[0][0]]),
-                ol.proj.fromLonLat([b[1][1], b[0][0]]),
-                ol.proj.fromLonLat([b[1][1], b[1][0]]),
-                ol.proj.fromLonLat([b[0][1], b[1][0]]),
-                ol.proj.fromLonLat([b[0][1], b[0][0]])
-            ]]);
-            feature = new ol.Feature(poly);
-        }
-        feature.set('label', gridId);
-        feature.set('isOptical', true);
-        source.addFeature(feature);
+    Object.keys(grids).forEach(id => {
+        const l = grids[id];
+        const f = l.footprint ? (new ol.format.GeoJSON()).readFeature(l.footprint, { dataProjection: 'EPSG:4326', featureProjection: 'EPSG:3857' }) : new ol.Feature(new ol.geom.Polygon([[ol.proj.fromLonLat([l.bounds[0][1], l.bounds[0][0]]), ol.proj.fromLonLat([l.bounds[1][1], l.bounds[0][0]]), ol.proj.fromLonLat([l.bounds[1][1], l.bounds[1][0]]), ol.proj.fromLonLat([l.bounds[0][1], l.bounds[1][0]]), ol.proj.fromLonLat([l.bounds[0][1], l.bounds[0][0]])]]));
+        f.set('label', id); f.set('isOptical', true); source.addFeature(f);
     });
-
-    identifyOpticalLayer = new ol.layer.Vector({
-        source: source,
-        zIndex: Z_INDEX_IDENTIFY,
-        style: (feature) => new ol.style.Style({
-            stroke: new ol.style.Stroke({ color: '#3f51b5', width: 2 }),
-            fill: new ol.style.Fill({ color: 'rgba(63, 81, 181, 0.05)' }),
-            text: new ol.style.Text({
-                text: feature.get('label'),
-                font: 'bold 14px sans-serif',
-                fill: new ol.style.Fill({ color: '#3f51b5' }),
-                stroke: new ol.style.Stroke({ color: '#fff', width: 2 })
-            })
-        })
-    });
-    map.addLayer(identifyOpticalLayer);
-    btn.classList.add('active');
+    identifyOpticalLayer = new ol.layer.Vector({ source: source, zIndex: Z_INDEX_IDENTIFY, style: (f) => new ol.style.Style({ stroke: new ol.style.Stroke({ color: '#3f51b5', width: 2 }), fill: new ol.style.Fill({ color: 'rgba(63, 81, 181, 0.05)' }), text: new ol.style.Text({ text: f.get('label'), font: 'bold 14px sans-serif', fill: new ol.style.Fill({ color: '#3f51b5' }), stroke: new ol.style.Stroke({ color: '#fff', width: 2 }) }) }) });
+    map.addLayer(identifyOpticalLayer); btn.classList.add('active'); saveSettings();
 }
 
 function toggleIdentifyRadar() {
     const btn = document.getElementById('identify-radar');
     if (identifyRadarLayer) {
-        map.removeLayer(identifyRadarLayer);
-        identifyRadarLayer = null;
-        if (highlightSource) highlightSource.clear();
-        btn.classList.remove('active');
-        return;
+        map.removeLayer(identifyRadarLayer); identifyRadarLayer = null; highlightSource.clear();
+        btn.classList.remove('active'); saveSettings(); return;
     }
-
-    const source = new ol.source.Vector();
-    const seen = new Set();
-
-    inventoryData.forEach(layer => {
-        if (!layer.product.startsWith('S1')) return;
-        if (seen.has(layer.acquisition_time)) return;
-        seen.add(layer.acquisition_time);
-        
-        let feature;
-        if (layer.footprint) {
-            const format = new ol.format.GeoJSON();
-            feature = format.readFeature(layer.footprint, {
-                dataProjection: 'EPSG:4326',
-                featureProjection: 'EPSG:3857'
-            });
-        } else {
-            const b = layer.bounds;
-            const poly = new ol.geom.Polygon([[
-                ol.proj.fromLonLat([b[0][1], b[0][0]]),
-                ol.proj.fromLonLat([b[1][1], b[0][0]]),
-                ol.proj.fromLonLat([b[1][1], b[1][0]]),
-                ol.proj.fromLonLat([b[0][1], b[1][0]]),
-                ol.proj.fromLonLat([b[0][1], b[0][0]])
-            ]]);
-            feature = new ol.Feature(poly);
-        }
-        
-        const date = new Date(layer.acquisition_time);
-        const label = date.toLocaleString(currentLang === 'fi' ? 'fi-FI' : (currentLang === 'sv' ? 'sv-SE' : (currentLang === 'de' ? 'de-DE' : 'en-GB')), { 
-            month: 'short', day: 'numeric', 
-            hour: '2-digit', minute: '2-digit', timeZone: 'UTC' 
-        }) + "Z";
-        
-        feature.set('label', label);
-        feature.set('time', layer.acquisition_time);
-        feature.set('isRadar', true);
-        source.addFeature(feature);
+    const source = new ol.source.Vector(), seen = new Set();
+    inventoryData.forEach(l => {
+        if (!l.product.startsWith('S1') || seen.has(l.acquisition_time)) return;
+        seen.add(l.acquisition_time);
+        const f = l.footprint ? (new ol.format.GeoJSON()).readFeature(l.footprint, { dataProjection: 'EPSG:4326', featureProjection: 'EPSG:3857' }) : new ol.Feature(new ol.geom.Polygon([[ol.proj.fromLonLat([l.bounds[0][1], l.bounds[0][0]]), ol.proj.fromLonLat([l.bounds[1][1], l.bounds[0][0]]), ol.proj.fromLonLat([l.bounds[1][1], l.bounds[1][0]]), ol.proj.fromLonLat([l.bounds[0][1], l.bounds[1][0]]), ol.proj.fromLonLat([l.bounds[0][1], l.bounds[0][0]])]]));
+        const date = new Date(l.acquisition_time);
+        f.set('label', date.toLocaleString(currentLang === 'fi' ? 'fi-FI' : (currentLang === 'sv' ? 'sv-SE' : (currentLang === 'de' ? 'de-DE' : 'en-GB')), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + "Z");
+        f.set('time', l.acquisition_time); f.set('isRadar', true); source.addFeature(f);
     });
-
-    identifyRadarLayer = new ol.layer.Vector({
-        source: source,
-        zIndex: Z_INDEX_IDENTIFY + 1,
-        style: (feature) => new ol.style.Style({
-            stroke: new ol.style.Stroke({ color: '#3f51b5', width: 2 }),
-            fill: new ol.style.Fill({ color: 'rgba(63, 81, 181, 0.05)' }),
-            text: new ol.style.Text({
-                text: feature.get('label'),
-                font: '11px sans-serif',
-                fill: new ol.style.Fill({ color: '#3f51b5' }),
-                stroke: new ol.style.Stroke({ color: '#fff', width: 2 }),
-                overflow: true
-            })
-        })
-    });
-    map.addLayer(identifyRadarLayer);
-    btn.classList.add('active');
+    identifyRadarLayer = new ol.layer.Vector({ source: source, zIndex: Z_INDEX_IDENTIFY + 1, style: (f) => new ol.style.Style({ stroke: new ol.style.Stroke({ color: '#3f51b5', width: 2 }), fill: new ol.style.Fill({ color: 'rgba(63, 81, 181, 0.05)' }), text: new ol.style.Text({ text: f.get('label'), font: '11px sans-serif', fill: new ol.style.Fill({ color: '#3f51b5' }), stroke: new ol.style.Stroke({ color: '#fff', width: 2 }), overflow: true }) }) });
+    map.addLayer(identifyRadarLayer); btn.classList.add('active'); saveSettings();
 }
 
-function getGridSquare(layer) {
-    if (!layer.product.startsWith("S2")) return "";
-    const parts = layer.path.split('/');
-    const filename = parts[parts.length - 1];
-    return filename.startsWith('T') ? filename.split('-')[0] : "";
+function getGridSquare(l) {
+    if (!l.product.startsWith("S2")) return "";
+    const fn = l.path.split('/').pop();
+    return fn.startsWith('T') ? fn.split('-')[0] : "";
 }
 
 function setS2SortMode(mode) {
     if (s2SortMode === mode) return;
-    s2SortMode = mode;
-    renderLayerPicker(inventoryData);
+    s2SortMode = mode; saveSettings(); renderLayerPicker(inventoryData);
 }
 
 function renderLayerPicker(layers) {
     const picker = document.getElementById('layer-picker');
-    const progressBar = document.getElementById('progress-bar');
-    const loadingText = document.getElementById('loading-text');
-    const t = UI_TRANSLATIONS[currentLang];
     const pt = PRODUCT_TRANSLATIONS[currentLang];
-
-    const satOrder = ['S2', 'S1', 'FUSED'];
-    const expandedSats = new Set();
-    satOrder.forEach(sat => {
-        const oldGroup = document.getElementById(`group-${sat}`);
-        if (oldGroup && !oldGroup.classList.contains('collapsed')) {
-            expandedSats.add(sat);
-        }
-    });
+    const saved = loadSettings();
+    const expandedIds = new Set(saved ? saved.expandedGroups : []);
+    
+    if (!saved) {
+        ['S2', 'S1', 'FUSED'].forEach(sat => {
+            const old = document.getElementById(`group-${sat}`);
+            if (old && !old.classList.contains('collapsed')) expandedIds.add(`group-${sat}`);
+        });
+    }
 
     picker.innerHTML = ''; 
-
     const groups = {};
-    layers.forEach(layer => {
-        const sat = layer.product.split('-')[0];
-        const type = layer.product.split('-').slice(1).join('-');
+    layers.forEach(l => {
+        const [sat, ...rest] = l.product.split('-');
+        const type = rest.join('-');
         if (!groups[sat]) groups[sat] = {};
         if (!groups[sat][type]) groups[sat][type] = [];
-        groups[sat][type].push(layer);
+        groups[sat][type].push(l);
     });
 
-    let totalLayers = layers.length;
-    let renderedLayers = 0;
-
-    satOrder.forEach(sat => {
+    ['S2', 'S1', 'FUSED'].forEach(sat => {
         if (!groups[sat]) return;
         const satMeta = pt[sat] || { title: sat, subtitle: "" };
         const satDiv = document.createElement('div');
-        satDiv.className = 'sat-group' + (expandedSats.has(sat) ? '' : ' collapsed');
+        satDiv.className = 'sat-group' + (expandedIds.has(`group-${sat}`) ? '' : ' collapsed');
         satDiv.id = `group-${sat}`;
-        
-        let headerHtml = `
-            <div class="sat-title" onclick="this.parentElement.classList.toggle('collapsed')">
-                <span>${satMeta.title} <small style="text-transform: none; font-weight: normal; opacity: 0.7;">${satMeta.subtitle}</small></span>
+        satDiv.innerHTML = `
+            <div class="sat-title" onclick="this.parentElement.classList.toggle('collapsed'); saveSettings();">
+                <span>${satMeta.title} <small>${satMeta.subtitle}</small></span>
             </div>
+            ${sat === 'S2' ? `<div class="sort-row"><button class="sort-btn ${s2SortMode === 'product' ? 'active' : ''}" onclick="event.stopPropagation(); setS2SortMode('product')">${UI_TRANSLATIONS[currentLang].by_product}</button><button class="sort-btn ${s2SortMode === 'grid' ? 'active' : ''}" onclick="event.stopPropagation(); setS2SortMode('grid')">${UI_TRANSLATIONS[currentLang].by_grid}</button></div>` : ''}
+            <div class="prod-container"></div>
         `;
-
-        if (sat === 'S2') {
-            headerHtml += `
-                <div class="sort-row">
-                    <button class="sort-btn ${s2SortMode === 'product' ? 'active' : ''}" onclick="event.stopPropagation(); setS2SortMode('product')">${t.by_product}</button>
-                    <button class="sort-btn ${s2SortMode === 'grid' ? 'active' : ''}" onclick="event.stopPropagation(); setS2SortMode('grid')">${t.by_grid}</button>
-                </div>
-            `;
-        }
-
-        headerHtml += `<div class="prod-container"></div>`;
-        satDiv.innerHTML = headerHtml;
         const prodContainer = satDiv.querySelector('.prod-container');
 
         if (sat === 'S2' && s2SortMode === 'grid') {
-            // Re-group by grid
             const gridGroups = {};
             Object.keys(groups[sat]).forEach(type => {
-                groups[sat][type].forEach(layer => {
-                    const grid = getGridSquare(layer) || t.unknown;
+                groups[sat][type].forEach(l => {
+                    const grid = getGridSquare(l) || UI_TRANSLATIONS[currentLang].unknown;
                     if (!gridGroups[grid]) gridGroups[grid] = {};
                     if (!gridGroups[grid][type]) gridGroups[grid][type] = [];
-                    gridGroups[grid][type].push(layer);
+                    gridGroups[grid][type].push(l);
                 });
             });
 
-            const grids = Object.keys(gridGroups).sort();
-            grids.forEach(grid => {
+            Object.keys(gridGroups).sort().forEach(grid => {
                 const gridDiv = document.createElement('div');
-                gridDiv.className = 'grid-group collapsed';
-                gridDiv.id = `grid-S2-${grid}`;
-                gridDiv.innerHTML = `
-                    <div class="grid-title" onclick="this.parentElement.classList.toggle('collapsed')">
-                        ${grid}
-                    </div>
-                    <div class="prod-container"></div>
-                `;
-
-                const gridTitle = gridDiv.querySelector('.grid-title');
-                gridTitle.onmouseenter = () => {
-                    // Show outline of a representative layer in this grid
-                    const types = Object.keys(gridGroups[grid]);
-                    let repLayer = null;
-                    if (gridGroups[grid]['TCI']) {
-                        repLayer = gridGroups[grid]['TCI'][0];
-                    } else if (types.length > 0) {
-                        repLayer = gridGroups[grid][types[0]][0];
-                    }
-                    if (repLayer) showLayerHover(repLayer);
+                const gid = `grid-S2-${grid}`;
+                gridDiv.className = 'grid-group' + (expandedIds.has(gid) ? '' : ' collapsed');
+                gridDiv.id = gid;
+                gridDiv.innerHTML = `<div class="grid-title" onclick="this.parentElement.classList.toggle('collapsed'); saveSettings();">${grid}</div><div class="prod-container"></div>`;
+                gridDiv.querySelector('.grid-title').onmouseenter = () => {
+                    const rep = gridGroups[grid]['TCI'] ? gridGroups[grid]['TCI'][0] : gridGroups[grid][Object.keys(gridGroups[grid])[0]][0];
+                    if (rep) showLayerHover(rep);
                 };
-                gridTitle.onmouseleave = () => hoverSource.clear();
-
-                const gridProdContainer = gridDiv.querySelector('.prod-container');
-
-                const types = Object.keys(gridGroups[grid]).sort((a, b) => {
-                    const idxA = S2_PRIORITY.indexOf(a);
-                    const idxB = S2_PRIORITY.indexOf(b);
-                    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
-                    if (idxA !== -1) return -1;
-                    if (idxB !== -1) return 1;
-                    return a.localeCompare(b);
-                });
-                types.forEach(type => {
-                    const typeMeta = pt[type] || { title: type, subtitle: "" };
+                gridDiv.querySelector('.grid-title').onmouseleave = () => hoverSource.clear();
+                const gpc = gridDiv.querySelector('.prod-container');
+                Object.keys(gridGroups[grid]).sort((a,b) => (S2_PRIORITY.indexOf(a) - S2_PRIORITY.indexOf(b)) || a.localeCompare(b)).forEach(type => {
                     const typeDiv = document.createElement('div');
-                    typeDiv.className = 'prod-group collapsed';
-                    typeDiv.id = `prod-S2-${grid}-${type}`;
-                    typeDiv.innerHTML = `
-                        <div class="prod-title" onclick="this.parentElement.classList.toggle('collapsed')">
-                            ${typeMeta.title}
-                        </div>
-                        <div class="layer-container"></div>
-                    `;
-                    const layerContainer = typeDiv.querySelector('.layer-container');
-                    
-                    const sortedLayers = gridGroups[grid][type].sort((a, b) => b.acquisition_time.localeCompare(a.acquisition_time));
-                    sortedLayers.forEach(layer => {
-                        layerContainer.appendChild(createLayerItem(layer));
-                        renderedLayers++;
-                        const percent = 50 + Math.round((renderedLayers / totalLayers) * 50);
-                        if (progressBar) progressBar.style.width = `${percent}%`;
-                    });
-                    gridProdContainer.appendChild(typeDiv);
+                    const tid = `prod-S2-${grid}-${type}`;
+                    typeDiv.className = 'prod-group' + (expandedIds.has(tid) ? '' : ' collapsed');
+                    typeDiv.id = tid;
+                    typeDiv.innerHTML = `<div class="prod-title" onclick="this.parentElement.classList.toggle('collapsed'); saveSettings();">${pt[type] ? pt[type].title : type}</div><div class="layer-container"></div>`;
+                    const lc = typeDiv.querySelector('.layer-container');
+                    gridGroups[grid][type].sort((a,b) => b.acquisition_time.localeCompare(a.acquisition_time)).forEach(l => lc.appendChild(createLayerItem(l)));
+                    gpc.appendChild(typeDiv);
                 });
                 prodContainer.appendChild(gridDiv);
             });
         } else {
-            const types = Object.keys(groups[sat]).sort((a, b) => {
-                if (sat === 'S2') {
-                    const idxA = S2_PRIORITY.indexOf(a);
-                    const idxB = S2_PRIORITY.indexOf(b);
-                    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
-                    if (idxA !== -1) return -1;
-                    if (idxB !== -1) return 1;
-                }
-                if (sat === 'S1') {
-                    const idxA = S1_PRIORITY.indexOf(a);
-                    const idxB = S1_PRIORITY.indexOf(b);
-                    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
-                    if (idxA !== -1) return -1;
-                    if (idxB !== -1) return 1;
-                }
+            Object.keys(groups[sat]).sort((a,b) => {
+                const prio = sat === 'S2' ? S2_PRIORITY : S1_PRIORITY;
+                const idxA = prio.indexOf(a), idxB = prio.indexOf(b);
+                if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+                if (idxA !== -1) return -1; if (idxB !== -1) return 1;
                 return a.localeCompare(b);
-            });
-
-            types.forEach(type => {
-                const typeMeta = pt[type] || { title: type, subtitle: "" };
+            }).forEach(type => {
                 const typeDiv = document.createElement('div');
-                typeDiv.className = 'prod-group collapsed';
-                typeDiv.id = `prod-${sat}-${type}`;
-                typeDiv.innerHTML = `
-                    <div class="prod-title" onclick="this.parentElement.classList.toggle('collapsed')">
-                        ${typeMeta.title}
-                        <span class="subtitle">${typeMeta.subtitle}</span>
-                    </div>
-                    <div class="layer-container"></div>
-                `;
-                const layerContainer = typeDiv.querySelector('.layer-container');
-
-                const sortedLayers = groups[sat][type].sort((a, b) => {
-                    if (sat === "S2") {
-                        const gridA = getGridSquare(a), gridB = getGridSquare(b);
-                        if (gridA !== gridB) return gridA.localeCompare(gridB);
-                    }
+                const tid = `prod-${sat}-${type}`;
+                typeDiv.className = 'prod-group' + (expandedIds.has(tid) ? '' : ' collapsed');
+                typeDiv.id = tid;
+                typeDiv.innerHTML = `<div class="prod-title" onclick="this.parentElement.classList.toggle('collapsed'); saveSettings();">${pt[type] ? pt[type].title : type} <span class="subtitle">${pt[type] ? pt[type].subtitle : ''}</span></div><div class="layer-container"></div>`;
+                const lc = typeDiv.querySelector('.layer-container');
+                groups[sat][type].sort((a,b) => {
+                    if (sat === "S2") { const ga = getGridSquare(a), gb = getGridSquare(b); if (ga !== gb) return ga.localeCompare(gb); }
                     return b.acquisition_time.localeCompare(a.acquisition_time);
-                });
-
-                sortedLayers.forEach(layer => {
-                    layerContainer.appendChild(createLayerItem(layer));
-                    renderedLayers++;
-                    const percent = 50 + Math.round((renderedLayers / totalLayers) * 50);
-                    if (progressBar) progressBar.style.width = `${percent}%`;
-                });
+                }).forEach(l => lc.appendChild(createLayerItem(l)));
                 prodContainer.appendChild(typeDiv);
             });
         }
         picker.appendChild(satDiv);
     });
+    updateGroupMarkers();
 }
 
-function showLayerHover(layer) {
-    if (layer.footprint) {
-        // Use precise footprint if available
-        const format = new ol.format.GeoJSON();
-        const feature = format.readFeature(layer.footprint, {
-            dataProjection: 'EPSG:4326',
-            featureProjection: 'EPSG:3857'
-        });
-        hoverSource.addFeature(feature);
-    } else {
-        // Fallback to bounds
-        const b = layer.bounds; // [[lat, lon], [lat, lon]]
-        const poly = new ol.geom.Polygon([[
-            ol.proj.fromLonLat([b[0][1], b[0][0]]),
-            ol.proj.fromLonLat([b[1][1], b[0][0]]),
-            ol.proj.fromLonLat([b[1][1], b[1][0]]),
-            ol.proj.fromLonLat([b[0][1], b[1][0]]),
-            ol.proj.fromLonLat([b[0][1], b[0][0]])
-        ]]);
-        hoverSource.addFeature(new ol.Feature(poly));
-    }
+function showLayerHover(l) {
+    const f = l.footprint ? (new ol.format.GeoJSON()).readFeature(l.footprint, { dataProjection: 'EPSG:4326', featureProjection: 'EPSG:3857' }) : new ol.Feature(new ol.geom.Polygon([[ol.proj.fromLonLat([l.bounds[0][1], l.bounds[0][0]]), ol.proj.fromLonLat([l.bounds[1][1], l.bounds[0][0]]), ol.proj.fromLonLat([l.bounds[1][1], l.bounds[1][0]]), ol.proj.fromLonLat([l.bounds[0][1], l.bounds[1][0]]), ol.proj.fromLonLat([l.bounds[0][1], l.bounds[0][0]])]]));
+    hoverSource.addFeature(f);
 }
 
-function createLayerItem(layer) {
+function createLayerItem(l) {
     const div = document.createElement('div');
-    div.className = 'layer-item';
-    const grid = getGridSquare(layer);
-    if (grid) div.dataset.grid = grid;
-    div.dataset.time = layer.acquisition_time;
-    
+    const isActive = activeLayers[l.path] && activeLayers[l.path].layer.getVisible();
+    div.className = 'layer-item' + (isActive ? ' active' : '');
+    const grid = getGridSquare(l); if (grid) div.dataset.grid = grid;
+    div.dataset.time = l.acquisition_time;
     const t = UI_TRANSLATIONS[currentLang];
-    const date = new Date(layer.acquisition_time);
-    const friendlyTime =
-        date.toLocaleString(currentLang === 'fi' ? 'fi-FI' : (currentLang === 'sv' ? 'sv-SE' : (currentLang === 'de' ? 'de-DE' : 'en-GB')), {
-            month: "short",
-            day: "numeric",
-            hour: "2-digit",
-            minute: "2-digit",
-            timeZone: "UTC",
-        }) + "Z";
-    const sizeStr = formatSize(layer.file_size_bytes);
-    const cloudStr =
-        layer.cloud_cover !== undefined && layer.cloud_cover !== null
-            ? `<span class="layer-cloud">☁️ ${layer.cloud_cover}%</span> `
-            : "";
-
-    div.innerHTML = `
-        <input type="checkbox" id="chk-${layer.path}">
-        <div class="layer-info">
-            <span class="layer-time">${grid ? grid + ", " : ""}${friendlyTime}</span>
-            <span class="layer-status">${cloudStr}${layer.acquisition_time.split("T")[0]}</span>
-        </div>
-        <div class="layer-actions">
-            <button class="dl-btn" title="${t.download_tif}">
-                <svg viewBox="0 0 24 24" width="16" height="16">
-                    <path fill="currentColor" d="M12 16l-5-5h3V4h4v7h3l-5 5zm9 2v2H3v-2h18z"/>
-                </svg>
-            </button>
-            <span class="file-size">${sizeStr}</span>
-        </div>
-    `;
-
+    const friendlyTime = (new Date(l.acquisition_time)).toLocaleString(currentLang === 'fi' ? 'fi-FI' : (currentLang === 'sv' ? 'sv-SE' : (currentLang === 'de' ? 'de-DE' : 'en-GB')), { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) + "Z";
+    const safeId = `chk-${l.path.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    div.innerHTML = `<input type="checkbox" id="${safeId}" ${isActive ? 'checked' : ''}><div class="layer-info"><span class="layer-time">${grid ? grid + ", " : ""}${friendlyTime}</span><span class="layer-status">${l.cloud_cover != null ? `☁️ ${l.cloud_cover}% ` : ""}${l.acquisition_time.split("T")[0]}</span></div><div class="layer-actions"><button class="dl-btn" title="${t.download_tif}"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 16l-5-5h3V4h4v7h3l-5 5zm9 2v2H3v-2h18z"/></svg></button><span class="file-size">${formatSize(l.file_size_bytes)}</span></div>`;
     div.onclick = (e) => {
-        if (e.target.closest('.dl-btn')) {
-            e.stopPropagation();
-            const baseUrl = window.location.href.split('index.html')[0].split('?')[0];
-            const url = baseUrl + IMAGE_BASE_URL + layer.path;
-            const filename = layer.path.split('/').pop();
-            downloadFile(url, filename);
-            return;
-        }
-        
-        if (e.target.tagName !== 'INPUT') {
-            const chk = div.querySelector('input');
-            chk.checked = !chk.checked;
-            toggleLayer(layer, chk.checked, div);
-        }
+        if (e.target.closest('.dl-btn')) { e.stopPropagation(); downloadFile(window.location.href.split('index.html')[0].split('?')[0] + IMAGE_BASE_URL + l.path, l.path.split('/').pop()); return; }
+        if (e.target.tagName !== 'INPUT') { const chk = div.querySelector('input'); chk.checked = !chk.checked; toggleLayer(l, chk.checked, div); }
     };
-    div.querySelector('input').onchange = (e) => toggleLayer(layer, e.target.checked, div);
-
-    div.onmouseenter = () => {
-        if (div.querySelector('input').checked) return;
-        showLayerHover(layer);
-    };
+    div.querySelector('input').onchange = (e) => toggleLayer(l, e.target.checked, div);
+    div.onmouseenter = () => { if (!div.querySelector('input').checked) showLayerHover(l); };
     div.onmouseleave = () => hoverSource.clear();
-
     return div;
 }
 
 function updateAttributions() {
     const years = new Set();
-    Object.values(activeLayers).forEach(obj => {
-        if (obj.layer.getVisible()) {
-            const year = obj.meta.acquisition_time.split('-')[0];
-            years.add(year);
-        }
-    });
-
-    if (years.size === 0) {
-        sentinelAttribution.setAttributions([]);
-        return;
-    }
-
-    let attr = "Made with Copernicus Sentinel Data";
-    const sortedYears = Array.from(years).sort();
-    const yearStr = sortedYears.length > 1 
-        ? `${sortedYears[0]}-${sortedYears[sortedYears.length - 1]}` 
-        : sortedYears[0];
-    attr += ` ${yearStr}`;
-    
-    sentinelAttribution.setAttributions([attr]);
+    Object.values(activeLayers).forEach(o => { if (o.layer.getVisible()) years.add(o.meta.acquisition_time.split('-')[0]); });
+    if (years.size === 0) { sentinelAttribution.setAttributions([]); return; }
+    const sorted = Array.from(years).sort();
+    sentinelAttribution.setAttributions([`Made with Copernicus Sentinel Data ${sorted.length > 1 ? `${sorted[0]}-${sorted[sorted.length - 1]}` : sorted[0]}`]);
 }
 
 function updateLegends() {
     updateAttributions();
-    const panel = document.getElementById('legend-panel');
-    panel.innerHTML = '';
-    const activeLegendIds = new Set();
-    Object.values(activeLayers).forEach(obj => {
-        // Only show legends for layers that are actually visible
-        if (obj.layer.getVisible() && obj.meta.legend_id) {
-            activeLegendIds.add(obj.meta.legend_id);
-        }
-    });
-    
-    activeLegendIds.forEach(id => {
+    const panel = document.getElementById('legend-panel'); panel.innerHTML = '';
+    const activeIds = new Set();
+    Object.values(activeLayers).forEach(o => { if (o.layer.getVisible() && o.meta.legend_id) activeIds.add(o.meta.legend_id); });
+    activeIds.forEach(id => {
         if (masterLegends[id]) {
-            // Find one of the active layers with this legend_id to get resolution
-            const sample = Object.values(activeLayers).find(o => o.meta.legend_id === id);
-            const res = sample ? sample.meta.resolution : null;
-
-            const div = document.createElement('div');
-            div.style.pointerEvents = 'auto';
-            div.style.cursor = 'pointer';
+            const extent = map.getView().calculateExtent(map.getSize());
+            const layersForLegend = Object.values(activeLayers).filter(o => {
+                if (!o.layer.getVisible() || o.meta.legend_id !== id) return false;
+                const b = o.meta.bounds;
+                const layerExtent = ol.extent.boundingExtent([ol.proj.fromLonLat([b[0][1], b[0][0]]), ol.proj.fromLonLat([b[1][1], b[1][0]])]);
+                return ol.extent.intersects(extent, layerExtent);
+            });
             
+            if (layersForLegend.length === 0) return;
+
+            const times = layersForLegend.map(o => {
+                const date = new Date(o.meta.acquisition_time);
+                return date.toLocaleString(currentLang === 'fi' ? 'fi-FI' : (currentLang === 'sv' ? 'sv-SE' : (currentLang === 'de' ? 'de-DE' : 'en-GB')), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + "Z";
+            }).sort().reverse(); // Show newest first
+            
+            const sample = layersForLegend[0];
+            const div = document.createElement('div'); div.style.pointerEvents = 'auto'; div.style.cursor = 'pointer';
             let html = masterLegends[id];
-            if (res) {
-                const resHtml = `<div class="legend-res">Res: ${res}m/px</div>`;
-                html = html.replace('</div>', resHtml + '</div>');
+            
+            let extraHtml = '';
+            if (sample && sample.meta.resolution) extraHtml += `<div class="legend-res" style="margin-bottom: 2px;">${UI_TRANSLATIONS[currentLang].res} ${sample.meta.resolution}m/px</div>`;
+            if (times.length > 0) {
+                extraHtml += `<div class="legend-times" style="font-size: 9px; color: #fff; opacity: 0.8; font-family: monospace; line-height: 1.1; margin-bottom: 8px;">${times.join(' | ')}</div>`;
             }
             
+            // Insert after the first </div> (which is the header title)
+            const firstDivIdx = html.indexOf('</div>');
+            if (firstDivIdx !== -1) {
+                html = html.substring(0, firstDivIdx + 6) + `<div class="legend-meta" style="padding-top: 4px;">${extraHtml}</div>` + html.substring(firstDivIdx + 6);
+            }
             div.innerHTML = html;
-            div.onclick = () => {
-                const parts = id.split('-');
-                const sat = parts[0];
-                const group = document.getElementById(`group-${sat}`);
-                const prod = document.getElementById(`prod-${sat}-${parts.slice(1).join('-')}`);
-                if (group) group.classList.remove('collapsed');
-                if (prod) prod.classList.remove('collapsed');
-                prod.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            };
+            div.onclick = () => { const parts = id.split('-'); const group = document.getElementById(`group-${parts[0]}`); const prod = document.getElementById(`prod-${parts[0]}-${parts.slice(1).join('-')}`); if (group) group.classList.remove('collapsed'); if (prod) prod.classList.remove('collapsed'); prod.scrollIntoView({ behavior: 'smooth', block: 'center' }); };
             panel.appendChild(div);
         }
     });
 }
 
-// --- LAYER MANAGEMENT ---
-async function toggleLayer(layerMeta, isVisible, element) {
-    const path = layerMeta.path;
-    const spinner = document.getElementById('map-spinner');
-
-    if (isVisible) {
-        // AUTO-ZOOM LOGIC: 
-        // Only if no layers are currently visible AND new layer is outside current view
-        const anyVisible = Object.values(activeLayers).some(obj => obj.layer.getVisible());
-        if (!anyVisible) {
-            const b = layerMeta.bounds;
-            const layerExtent = ol.extent.boundingExtent([
-                ol.proj.fromLonLat([b[0][1], b[0][0]]),
-                ol.proj.fromLonLat([b[1][1], b[1][0]])
-            ]);
-            const viewExtent = map.getView().calculateExtent(map.getSize());
-            if (!ol.extent.intersects(layerExtent, viewExtent)) {
-                map.getView().fit(layerExtent, { padding: [50, 50, 50, 50], duration: 1000 });
-            }
+async function toggleLayer(l, vis, el, isRestoring = false) {
+    const path = l.path;
+    if (vis) {
+        if (!isRestoring && !Object.values(activeLayers).some(o => o.layer.getVisible())) {
+            const b = l.bounds;
+            const ext = ol.extent.boundingExtent([ol.proj.fromLonLat([b[0][1], b[0][0]]), ol.proj.fromLonLat([b[1][1], b[1][0]])]);
+            if (!ol.extent.intersects(ext, map.getView().calculateExtent(map.getSize()))) map.getView().fit(ext, { padding: [50, 50, 50, 50], duration: 1000 });
         }
-
-        // If layer already exists, just make it visible
         if (activeLayers[path]) {
-            activeLayers[path].layer.setVisible(true);
-            element.classList.add('active');
-            updateLegends();
-            updateGroupMarkers();
-            return;
+            activeLayers[path].layer.setVisible(true); el.classList.add('active');
+            updateLegends(); updateGroupMarkers(); if (!isRestoring) saveSettings(); return;
         }
-
-        element.classList.add('active', 'loading');
-        spinner.style.display = 'block';
-        
+        el.classList.add('active', 'loading'); document.getElementById('map-spinner').style.display = 'block';
         try {
-            // Safer URL construction
-            const baseUrl = window.location.href.split('index.html')[0].split('?')[0];
-            const url = baseUrl + IMAGE_BASE_URL + path;
-            
-            console.log("Loading COG:", url);
-
-            // OPENLAYERS NATIVE COG SOURCE
             const source = new ol.source.GeoTIFF({
-                sources: [{ url: url }],
-                // OpenLayers WebGLTile often prefers to handle nodata internally 
-                // but we can help it if needed.
+                sources: [{ url: window.location.href.split('index.html')[0].split('?')[0] + IMAGE_BASE_URL + path }],
                 normalize: true,
-                transition: 0 // Disable fade-in effect
+                transition: 0,
+                crossOrigin: 'anonymous'
             });
-
-            const leafletLayer = new ol.layer.WebGLTile({
-                source: source,
-                opacity: 1,
-                visible: true
-            });
-
-            // Set Z-index based on acquisition time
-            const timestamp = new Date(layerMeta.acquisition_time).getTime();
-            leafletLayer.setZIndex(Math.floor(timestamp / 100000));
-
-            activeLayers[path] = { layer: leafletLayer, meta: layerMeta };
-            map.addLayer(leafletLayer);
-            updateLegends();
-            updateGroupMarkers();
-
-            // Spinner off once it starts loading tiles
-            element.classList.remove('loading');
-            spinner.style.display = 'none';
-
-        } catch (err) {
-            console.error("OL Load Error:", err);
-            element.classList.remove('active', 'loading');
-            element.querySelector('input').checked = false;
-            updateGroupMarkers();
-            spinner.style.display = 'none';
-        }
+            const layer = new ol.layer.WebGLTile({ source: source, opacity: 1, visible: true });
+            layer.setZIndex(Math.floor((new Date(l.acquisition_time)).getTime() / 100000));
+            activeLayers[path] = { layer, meta: l };
+            map.addLayer(layer); updateLegends(); updateGroupMarkers(); if (!isRestoring) saveSettings();
+            el.classList.remove('loading'); document.getElementById('map-spinner').style.display = 'none';
+        } catch (err) { el.classList.remove('active', 'loading'); el.querySelector('input').checked = false; updateGroupMarkers(); document.getElementById('map-spinner').style.display = 'none'; }
     } else {
-        element.classList.remove('active', 'loading');
-        if (activeLayers[path]) {
-            // Just hide it, don't remove it from the map or state
-            activeLayers[path].layer.setVisible(false);
-            updateLegends();
-            updateGroupMarkers();
-        }
+        el.classList.remove('active', 'loading');
+        if (activeLayers[path]) { activeLayers[path].layer.setVisible(false); updateLegends(); updateGroupMarkers(); if (!isRestoring) saveSettings(); }
     }
 }
