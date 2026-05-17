@@ -54,7 +54,7 @@ def convert_to_cog(path: str) -> None:
     ]
 
     try:
-        result = subprocess.run(cmd, check=True, capture_output=True)
+        subprocess.run(cmd, check=True, capture_output=True)
         # Replace original with COG
         os.replace(tmp_path, path)
         print(f"Converted to COG: {os.path.basename(path)}", flush=True)
@@ -66,9 +66,13 @@ def convert_to_cog(path: str) -> None:
         # If gdal_translate failed, try building overviews at least so it's usable
         print(f"Attempting fallback overview generation for {path}...", flush=True)
         try:
-            subprocess.run(["gdaladdo", "-r", "average", path, "2", "4", "8", "16", "32"], check=False)
-        except: pass
-        
+            subprocess.run(
+                ["gdaladdo", "-r", "average", path, "2", "4", "8", "16", "32"],
+                check=False,
+            )
+        except:
+            pass
+
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
