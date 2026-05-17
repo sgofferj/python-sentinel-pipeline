@@ -24,6 +24,7 @@ The goal is to produce physically consistent, high-contrast imagery optimized fo
 - **Memory Safety:** Parallelism is constrained by `MAX_PARALLEL_FINALIZERS` and single-threaded GDAL sub-processes to prevent OOM kills on 16GB systems.
 - **Lean Metadata:** Footprints are generated using 100m downsampling with recursive hole-filling and coordinate rounding. This makes sidecar JSONs ~100x smaller and faster to generate.
 - **Automatic Dependencies:** If you ask for a fusion product (like `RADAR-BURN`), the pipeline automatically ensures all required analytic source products (VH, NDVI, etc.) are generated first.
+- **Automated ROI Cropping:** Extracts precise, surgical crops for specific Regions of Interest (ROIs) defined in `roi_config.json`. Supports coverage-based filtering (e.g., only crop if >90% of the ROI is visible).
 - **GPU Acceleration:** If `cupy` is installed and a CUDA-capable GPU is found, multispectral index math is automatically offloaded to the GPU.
 
 ### OSINT & Specialty Products
@@ -34,10 +35,11 @@ The goal is to produce physically consistent, high-contrast imagery optimized fo
 - **TARGET-PROBE-V2:** Advanced sensor fusion gating building signatures with radar returns.
 - **LIFE-MACHINE:** Combined SAR/Optical discovery composite for distinguishing natural terrain from man-made structures.
 - **AIS Correlation:** Correlates satellite imagery with historical AIS vessel data from a [python-ais-recorder](https://github.com/sgofferj/python-ais-recorder) API. Circles and data blocks are plotted onto S1-Ratio or S2-TCI images to identify ships at the exact moment of acquisition.
+- **Overflight Prediction:** Predicts the next pass of Sentinel-1 and Sentinel-2 satellites over your configured bounding boxes using high-precision Skyfield propagation and Celestrak TLEs.
 
 ## Configuration
 
-Settings are handled via a `.env` file.
+Settings are handled via a `.env` file. The pipeline supports dynamic variable expansion (e.g., `S1_BOX = ${BOX_GULF}`), allowing you to define your coordinates once and reuse them across different parameters.
 
 ### CDSE Credentials
 
@@ -135,6 +137,10 @@ While the pipeline is highly automated, the following utility scripts are availa
 
 - **Cleanup**: `python cleanup.py --days 30 --force`  
   Removes products older than the specified number of days from `output/`, `temp/`, and the search logs. Defaults to 30 days and dry-run mode (remove `--force` to see what would be deleted).
+- **ROI Manager**: `python roi_manager.py --all`  
+  Processes historical data to extract crops for all ROIs defined in `roi_config.json`. (Normally integrated into the main pipeline).
+- **Overflight Predictor**: `python overflight_predictor.py`  
+  Standalone script to check the next scheduled satellite passes.
 - **Metadata Rebuild**: `python rebuild_metadata.py`  
   Bulk regenerates all `.json` sidecar files for existing visual TIFFs. Useful if you've updated the metadata engine or manually moved files.
 - **Inventory Rebuild**: `python inventory_manager.py`  
@@ -147,6 +153,9 @@ The project includes a lightweight web viewer in the `viewer/` directory. It's d
 - **Multi-language Support:** Choose between Finnish, Swedish, English, and German via the sidebar.
 - **Smart Grouping:** Sort Sentinel-2 imagery by product type or by grid tile.
 - **Interactive Layers:** Hover to see footprints, click to jump to the sidebar entry.
+- **Cloud Metadata:** Sentinel-2 products prominently display the cloud coverage percentage (e.g., ☁️ 4.2%).
+- **Advanced Tools:** Includes a fullscreen mode, a screenshot tool, and a BBOX coordinate widget for easier area definition.
+- **Overflight HUD:** Displays the predicted time for the next Sentinel-1/2 passes at the bottom of the layer picker.
 
 ## Hardware Acceleration (GPU)
 

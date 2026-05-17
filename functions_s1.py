@@ -45,9 +45,13 @@ if os.path.exists(AIS_DIR) and AIS_DIR not in sys.path:
 
 # --- CUDA Acceleration ---
 try:
-    import cupy as cp
+    import importlib.util
 
-    HAS_CUDA: bool = os.getenv("DISABLE_GPU", "false").lower() not in ("true", "1")
+    HAS_CUPY_INSTALLED = importlib.util.find_spec("cupy") is not None
+    HAS_CUDA: bool = HAS_CUPY_INSTALLED and os.getenv("DISABLE_GPU", "false").lower() not in (
+        "true",
+        "1",
+    )
 except ImportError:
     HAS_CUDA = False
 

@@ -18,10 +18,9 @@ import os
 import sys
 import json
 import datetime
-import math
 import re
 import time
-from typing import Dict, List, Any, Tuple, Optional
+from typing import Dict, List, Any
 
 import requests
 import rasterio as rio
@@ -154,7 +153,7 @@ def plot_on_image(
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 20
         )
     except:
-        font = ImageFont.load_default()
+        font = ImageFont.load_default()  # type: ignore
 
     dummy_draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
 
@@ -162,16 +161,16 @@ def plot_on_image(
         trans = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
         width, height = src.width, src.height
         profile = src.profile.copy()
-        
+
         # Force 4-band RGBA, Tiled, and BIGTIFF for rendering
         profile.update(
-            count=4, 
-            driver="GTiff", 
-            tiled=True, 
-            blockxsize=512, 
-            blockysize=512, 
+            count=4,
+            driver="GTiff",
+            tiled=True,
+            blockxsize=512,
+            blockysize=512,
             compress="lzw",
-            BIGTIFF="YES"
+            BIGTIFF="YES",
         )
 
         tracks: Dict[int, List[Dict[str, Any]]] = {}
@@ -207,10 +206,16 @@ def plot_on_image(
                 continue
 
             if p1 and p2:
-                t1, t2 = parse_utc_timestamp(p1["timestamp"]), parse_utc_timestamp(p2["timestamp"])
+                t1, t2 = parse_utc_timestamp(p1["timestamp"]), parse_utc_timestamp(
+                    p2["timestamp"]
+                )
                 ratio = (target_ts - t1) / (t2 - t1)
-                lon = float(p1["longitude"]) + ratio * (float(p2["longitude"]) - float(p1["longitude"]))
-                lat = float(p1["latitude"]) + ratio * (float(p2["latitude"]) - float(p1["latitude"]))
+                lon = float(p1["longitude"]) + ratio * (
+                    float(p2["longitude"]) - float(p1["longitude"])
+                )
+                lat = float(p1["latitude"]) + ratio * (
+                    float(p2["latitude"]) - float(p1["latitude"])
+                )
             else:
                 lon, lat = float(p1["longitude"]), float(p1["latitude"])
 
@@ -241,41 +246,85 @@ def plot_on_image(
             bbox = dummy_draw.textbbox((0, 0), text, font=font)
             tw, th, padding = bbox[2] - bbox[0], bbox[3] - bbox[1], 10
 
-            offsets = [(50, -th // 2), (50, 50), (0, 50), (-50 - tw, 50), (-50 - tw, -th // 2), (-50 - tw, -50 - th), (0, -50 - th), (50, -50 - th)]
+            offsets = [
+                (50, -th // 2),
+                (50, 50),
+                (0, 50),
+                (-50 - tw, 50),
+                (-50 - tw, -th // 2),
+                (-50 - tw, -50 - th),
+                (0, -50 - th),
+                (50, -50 - th),
+            ]
             best_pos = (px + 50, py - th // 2)
             for ox, oy in offsets:
                 tx, ty = px + ox, py + oy
-                rect = [tx - padding, ty - padding, tx + tw + padding, ty + th + padding]
-                if tx < 0 or ty < 0 or tx + tw > width or ty + th > height: continue
-                if any(not (rect[2] < r[0] or rect[0] > r[2] or rect[3] < r[1] or rect[1] > r[3]) for r in placed_rects): continue
-                best_pos = (tx, ty); placed_rects.append(rect); break
+                rect = [
+                    tx - padding,
+                    ty - padding,
+                    tx + tw + padding,
+                    ty + th + padding,
+                ]
+                if tx < 0 or ty < 0 or tx + tw > width or ty + th > height:
+                    continue
+                if any(
+                    not (
+                        rect[2] < r[0]
+                        or rect[0] > r[2]
+                        or rect[3] < r[1]
+                        or rect[1] > r[3]
+                    )
+                    for r in placed_rects
+                ):
+                    continue
+                best_pos = (tx, ty)
+                placed_rects.append(rect)
+                break
             else:
-                best_pos = (px + 50, py - th // 2); placed_rects.append([best_pos[0]-padding, best_pos[1]-padding, best_pos[0]+tw+padding, best_pos[1]+th+padding])
+                best_pos = (px + 50, py - th // 2)
+                placed_rects.append(
+                    [
+                        best_pos[0] - padding,
+                        best_pos[1] - padding,
+                        best_pos[0] + tw + padding,
+                        best_pos[1] + th + padding,
+                    ]
+                )
 
             # Store annotation with Y-bounds for strip selection
             # Circle radius 15, padding 10
             min_y = min(py - 15, best_pos[1] - padding)
             max_y = max(py + 15, best_pos[1] + th + padding)
-            
-            ship_annotations.append({
-                "px": px, "py": py, "text_pos": best_pos, "text": text,
-                "tw": tw, "th": th, "padding": padding,
-                "min_y": min_y, "max_y": max_y
-            })
+
+            ship_annotations.append(
+                {
+                    "px": px,
+                    "py": py,
+                    "text_pos": best_pos,
+                    "text": text,
+                    "tw": tw,
+                    "th": th,
+                    "padding": padding,
+                    "min_y": min_y,
+                    "max_y": max_y,
+                }
+            )
 
         if not ship_annotations:
             print("No vessels plotted on the image area.")
             return
 
-        print(f"Plotting {len(ship_annotations)} vessels using strip-based rendering...")
-        
+        print(
+            f"Plotting {len(ship_annotations)} vessels using strip-based rendering..."
+        )
+
         with rio.open(out_path, "w", **profile) as dst:
             strip_height = 2048
             for y_start in range(0, height, strip_height):
                 y_end = min(y_start + strip_height, height)
                 h = y_end - y_start
                 win = Window(0, y_start, width, h)
-                
+
                 # Read strip
                 if src.count >= 4:
                     strip_data = src.read([1, 2, 3, 4], window=win)
@@ -283,33 +332,55 @@ def plot_on_image(
                     rgb = src.read([1, 2, 3], window=win)
                     alpha = np.ones((h, width), dtype=np.uint8) * 255
                     strip_data = np.concatenate([rgb, alpha[np.newaxis, ...]], axis=0)
-                
+
                 # Convert to PIL
                 strip_img = Image.fromarray(np.transpose(strip_data, (1, 2, 0)), "RGBA")
                 strip_draw = ImageDraw.Draw(strip_img, "RGBA")
-                
+
                 # Find ships that overlap this strip
                 # A ship overlaps if its annotation bounding box overlaps [y_start, y_end]
                 for ann in ship_annotations:
                     if ann["max_y"] < y_start or ann["min_y"] > y_end:
                         continue
-                    
+
                     # Local coordinates
                     lpx, lpy = ann["px"], ann["py"] - y_start
                     ltx, lty = ann["text_pos"][0], ann["text_pos"][1] - y_start
                     tw, th, padding = ann["tw"], ann["th"], ann["padding"]
-                    
+
                     # Circle
-                    strip_draw.ellipse([lpx - 15, lpy - 15, lpx + 15, lpy + 15], outline=(255, 235, 59, 255), width=3)
+                    strip_draw.ellipse(
+                        [lpx - 15, lpy - 15, lpx + 15, lpy + 15],
+                        outline=(255, 235, 59, 255),
+                        width=3,
+                    )
                     # Line
-                    strip_draw.line([lpx, lpy, ltx + (tw if lpx > ltx else 0), lty + th // 2], fill=(255, 235, 59, 180), width=2)
+                    strip_draw.line(
+                        [lpx, lpy, ltx + (tw if lpx > ltx else 0), lty + th // 2],
+                        fill=(255, 235, 59, 180),
+                        width=2,
+                    )
                     # Text box
-                    strip_draw.rectangle([ltx - padding, lty - padding, ltx + tw + padding, lty + th + padding], fill=(0, 0, 0, 160), outline=(255, 235, 59, 200), width=1)
-                    strip_draw.text((ltx, lty), ann["text"], font=font, fill=(255, 235, 59, 255))
-                
+                    strip_draw.rectangle(
+                        [
+                            ltx - padding,
+                            lty - padding,
+                            ltx + tw + padding,
+                            lty + th + padding,
+                        ],
+                        fill=(0, 0, 0, 160),
+                        outline=(255, 235, 59, 200),
+                        width=1,
+                    )
+                    strip_draw.text(
+                        (ltx, lty), ann["text"], font=font, fill=(255, 235, 59, 255)
+                    )
+
                 # Write strip
                 dst.write(np.transpose(np.array(strip_img), (2, 0, 1)), window=win)
-                print(f"  Processed strip {y_start} to {y_end}...", end="\r", flush=True)
+                print(
+                    f"  Processed strip {y_start} to {y_end}...", end="\r", flush=True
+                )
 
     print(f"\nAIS Correlation complete: {out_path}")
 
