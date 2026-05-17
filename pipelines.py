@@ -18,6 +18,7 @@ Now honors processed-file logging only after successful handling.
 
 import argparse
 import os
+import subprocess
 import time
 import zipfile
 from typing import Any, Dict, List, Optional
@@ -61,6 +62,8 @@ FUSION_PROCESSES: List[str] = os.getenv(
 
 CLEANUP_AFTER_RUN: bool = os.getenv("CLEANUP_AFTER_RUN", "false").lower() == "true"
 CLEANUP_DAYS: int = int(os.getenv("CLEANUP_DAYS", "30"))
+CLEANUP_RAW: bool = os.getenv("CLEANUP_RAW", "true").lower() == "true"
+EXECUTE_AFTER_PIPELINE: Optional[str] = os.getenv("EXECUTE_AFTER_PIPELINE")
 
 USERNAME: str = os.getenv("COPERNICUS_USERNAME", "")
 PASSWORD: str = os.getenv("COPERNICUS_PASSWORD", "")
@@ -242,12 +245,38 @@ if __name__ == "__main__":
         inventory_manager.rebuild_inventory()
         # ROI Stage
         roi_count = roi_manager.run_roi_stage()
+
+        # Immediate cleanup of raw data if enabled
+        if CLEANUP_RAW:
+            print(
+                "\nCleaning up source .SAFE directories for processed products...",
+                flush=True,
+            )
+            # Create a combined list of processed products for cleanup
+            processed_all = []
+            for feat in processed_s1:
+                processed_all.append({"base_name": feat["properties"]["title"]})
+            for feat in processed_s2:
+                processed_all.append({"base_name": feat["properties"]["title"]})
+
+            if processed_all:
+                cleanup.cleanup_source_data(processed_all, dry_run=False)
     else:
         print("\nNothing new to finalize.", flush=True)
 
     if CLEANUP_AFTER_RUN:
         print("\n--- Running Post-Pipeline Cleanup ---", flush=True)
         cleanup.run_cleanup(days=CLEANUP_DAYS, dry_run=False)
+
+    if EXECUTE_AFTER_PIPELINE:
+        print(
+            f"\n--- Running Post-Pipeline Hook: {EXECUTE_AFTER_PIPELINE} ---",
+            flush=True,
+        )
+        try:
+            subprocess.run(EXECUTE_AFTER_PIPELINE, shell=True, check=False)
+        except Exception as e:
+            print(f"Error executing post-pipeline hook: {e}", flush=True)
 
     func.perf_logger.stop_run()
 

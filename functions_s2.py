@@ -20,6 +20,7 @@ import os
 import queue
 import re
 import subprocess
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
@@ -34,6 +35,11 @@ import constants as c
 import functions as func
 import legends
 import metadata_engine as meta
+
+# --- AIS Correlator ---
+AIS_DIR = os.path.join(os.path.dirname(__file__), "ais-correlator")
+if os.path.exists(AIS_DIR) and AIS_DIR not in sys.path:
+    sys.path.append(AIS_DIR)
 
 # --- CUDA Acceleration ---
 try:
@@ -555,9 +561,13 @@ def _render_internal(
 
 
 def run_pipeline(
-    ds_obj: gdal.Dataset, processes: List[str], fusion_processes: List[str] = []
+    ds_obj: gdal.Dataset,
+    processes: List[str],
+    fusion_processes: Optional[List[str]] = None,
 ) -> None:
     """Entry point for S2 pipeline."""
+    if fusion_processes is None:
+        fusion_processes = []
     product_uri = gdal.Info(ds_obj, format="json")["metadata"][""]["PRODUCT_URI"]
     utm = get_utm(product_uri)
     time_str: str = str(get_time(product_uri)) + "Z"
@@ -610,4 +620,32 @@ def run_pipeline(
 
     prepare(ds_obj)
     _render_internal(v_paths, a_paths, cloud_cover=cloud_cover)
+
+    # AIS Correlation
+    if "AIS" in processes and "TCI" in v_paths:
+        target_tif = v_paths["TCI"] + ".tif"
+        if os.path.exists(target_tif):
+            print(f"Running AIS Correlation on {target_tif}...", flush=True)
+            try:
+                import ais_correlator
+
+                meta_ais = ais_correlator.get_metadata(target_tif)
+                ais_data = ais_correlator.fetch_ais_data(meta_ais)
+                if ais_data:
+                    ais_correlator.plot_on_image(target_tif, ais_data, meta_ais["time"])
+                    ais_tif = target_tif.replace(".tif", "_AIS.tif")
+                    if os.path.exists(ais_tif):
+                        cog.convert_to_cog(ais_tif)
+                        meta.generate_sidecar(
+                            ais_tif,
+                            "S2-TCI-AIS",
+                            "S2-TCI-AIS",
+                            effective_res=10.0,
+                            cloud_cover=cloud_cover,
+                        )
+                else:
+                    print("No AIS data found for S2 product.")
+            except Exception as e:
+                print(f"AIS Correlation failed: {e}")
+
     cleanup()

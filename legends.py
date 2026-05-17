@@ -183,9 +183,29 @@ def get_s2_composite_legend(name, r_desc, g_desc, b_desc, extra_info=None):
     """
 
 
+def get_ais_legend(base_legend_html, product_name):
+    """Wraps an existing legend with an AIS overlay indicator."""
+    ais_part = """
+    <div style="margin-top: 10px; border-top: 1px solid #ffeb3b; padding-top: 5px; display: flex; align-items: center; gap: 8px;">
+        <div style="width: 14px; height: 14px; border: 2px solid #ffeb3b; border-radius: 50%; background: rgba(255, 235, 59, 0.2);"></div>
+        <span style="color: #ffeb3b; font-weight: bold;">AIS VESSEL DATA ACTIVE</span>
+    </div>
+    <div style="font-size: 10px; color: #aaa; margin-top: 3px;">
+        Circles indicate interpolated vessel positions at time of acquisition.
+    </div>
+    """
+    # Insert before the last closing div of the legend-box
+    return base_legend_html.strip().replace("</div>\n    </div>", ais_part + "</div>")
+
+
 def save_all_legends(output_dir):
     """Saves all legends as a JSON dictionary for frontend consumption."""
     os.makedirs(output_dir, exist_ok=True)
+
+    # Base legends
+    ratio_sar = get_ratio_sar_legend()
+    tci_s2 = """<div class="legend-box" style="padding: 10px; background: rgba(0,0,0,0.8); color: white; border-radius: 5px; font-family: monospace; font-size: 12px;"><div style="font-weight: bold; color: #ffeb3b;">S2 TCI (Natural Color)</div></div>"""
+
     legends = {
         # Fusion
         "RADAR-BURN": get_radar_burn_legend(),
@@ -194,7 +214,8 @@ def save_all_legends(output_dir):
         # S1
         "S1-VH": get_standard_sar_legend("VH"),
         "S1-VV": get_standard_sar_legend("VV"),
-        "S1-RATIO": get_ratio_sar_legend(),
+        "S1-RATIO": ratio_sar,
+        "S1-RATIO-AIS": get_ais_legend(ratio_sar, "S1 RATIO"),
         # S2 Indices
         "S2-NDVI": get_s2_index_legend(
             "NDVI", "Veg Index", -0.1, 0.9, labels=["No Veg", "Stressed", "Dense"]
@@ -222,7 +243,8 @@ def save_all_legends(output_dir):
             "NBR", "Burn Ratio", -0.2, 0.5, labels=["Burned", "Regrow", "Healthy"]
         ),
         # S2 Composites
-        "S2-TCI": """<div class="legend-box" style="padding: 10px; background: rgba(0,0,0,0.8); color: white; border-radius: 5px; font-family: monospace; font-size: 12px;"><div style="font-weight: bold; color: #ffeb3b;">S2 TCI (Natural Color)</div></div>""",
+        "S2-TCI": tci_s2,
+        "S2-TCI-AIS": get_ais_legend(tci_s2, "S2 TCI"),
         "S2-NIRFC": get_s2_composite_legend("NIRFC", "NIR (Veg)", "Red", "Green"),
         "S2-AP": get_s2_composite_legend(
             "AP",

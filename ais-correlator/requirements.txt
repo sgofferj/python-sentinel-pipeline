@@ -1,0 +1,7 @@
+requests
+rasterio
+numpy
+Pillow
+shapely
+pyproj
+python-dotenv
