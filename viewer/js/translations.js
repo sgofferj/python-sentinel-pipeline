@@ -22,7 +22,9 @@ const UI_TRANSLATIONS = {
         unknown: "Tuntematon",
         acq_range: "Aikaväli",
         fullscreen: "Koko näyttö",
-        screenshot: "Kuvakaappaus"
+        screenshot: "Kuvakaappaus",
+        roi: "ROI",
+        by_roi: "Alueittain"
     },
     sv: {
         title: "Satellitbilder",
@@ -45,7 +47,9 @@ const UI_TRANSLATIONS = {
         fetching: "Hämtar...",
         processing: "Bearbetar data...",
         unknown: "Okänd",
-        acq_range: "Tidsintervall"
+        acq_range: "Tidsintervall",
+        roi: "ROI",
+        by_roi: "Per område"
     },
     en: {
         title: "Satellite Imagery",
@@ -68,7 +72,9 @@ const UI_TRANSLATIONS = {
         fetching: "Fetching...",
         processing: "Processing data...",
         unknown: "Unknown",
-        acq_range: "Range"
+        acq_range: "Range",
+        roi: "ROI",
+        by_roi: "By ROI"
     },
     de: {
         title: "Satellitenbilder",
@@ -93,7 +99,9 @@ const UI_TRANSLATIONS = {
         unknown: "Unbekannt",
         acq_range: "Zeitraum",
         fullscreen: "Vollbild",
-        screenshot: "Screenshot"
+        screenshot: "Screenshot",
+        roi: "ROI",
+        by_roi: "Nach Region"
         },
 };
 
@@ -102,6 +110,7 @@ const PRODUCT_TRANSLATIONS = {
         "S1": { title: "SAR tutka", subtitle: "(ESA Sentinel 1)" },
         "S2": { title: "Optinen", subtitle: "(ESA Sentinel 2)" },
         "FUSED": { title: "Sensorifuusio", subtitle: "(S1 + S2 yhdistelmäkuvat)" },
+        "ROI": { title: "Kiinnostavat alueet", subtitle: "(ROI)" },
         "VV": { title: "VV-polarisaatio", subtitle: "(Pystysuora lähetys ja vastaanotto)" },
         "VH": { title: "VH-polarisaatio", subtitle: "(Pysty-vaaka ristiinpolarisaatio)" },
         "RATIO": { title: "VV/VH-suhde", subtitle: "" },
@@ -123,6 +132,7 @@ const PRODUCT_TRANSLATIONS = {
         "S1": { title: "SAR-radar", subtitle: "(ESA Sentinel 1)" },
         "S2": { title: "Optisk", subtitle: "(ESA Sentinel 2)" },
         "FUSED": { title: "Sensorfusion", subtitle: "(Kombinerade S1 + S2-bilder)" },
+        "ROI": { title: "Intressanta områden", subtitle: "(ROI)" },
         "VV": { title: "VV-polarisation", subtitle: "(Vertikal sändning och mottagning)" },
         "VH": { title: "VH-polarisation", subtitle: "(Vertikal-horisontell krysspolarisation)" },
         "RATIO": { title: "VV/VH-förhållande", subtitle: "" },
@@ -144,6 +154,7 @@ const PRODUCT_TRANSLATIONS = {
         "S1": { title: "SAR Radar", subtitle: "(ESA Sentinel 1)" },
         "S2": { title: "Optical", subtitle: "(ESA Sentinel 2)" },
         "FUSED": { title: "Sensor Fusion", subtitle: "(Combined S1 + S2 imagery)" },
+        "ROI": { title: "Regions of Interest", subtitle: "(ROI)" },
         "VV": { title: "VV Polarization", subtitle: "(Vertical transmit and receive)" },
         "VH": { title: "VH Polarization", subtitle: "(Vertical-horizontal cross-polarization)" },
         "RATIO": { title: "VV/VH Ratio", subtitle: "" },
@@ -164,7 +175,8 @@ const PRODUCT_TRANSLATIONS = {
     de: {
         "S1": { title: "SAR Radar", subtitle: "(ESA Sentinel 1)" },
         "S2": { title: "Optisch", subtitle: "(ESA Sentinel 2)" },
-        "FUSED": { title: "Sensorfusion", subtitle: "(Kombinierte S1 + S2 Bilder)" },
+        "FUSED": { title: "Sensorfusion", subtitle: "(Combined S1 + S2 imagery)" },
+        "ROI": { title: "Interessante Regionen", subtitle: "(ROI)" },
         "VV": { title: "VV-Polarisation", subtitle: "(Vertikal gesendet und empfangen)" },
         "VH": { title: "VH-Polarisation", subtitle: "(Vertikal-Horizontal Kreuzpolarisation)" },
         "RATIO": { title: "VV/VH-Verhältnis", subtitle: "" },

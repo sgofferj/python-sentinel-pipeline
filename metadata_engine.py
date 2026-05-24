@@ -56,20 +56,98 @@ def _round_list(lst: Any, precision: int) -> Any:
     return [_round_list(x, precision) for x in lst]
 
 
+# Resolution mapping (Effective resolution in m/px)
+RES_MAP = {
+    "S1-VV": 15.0,
+    "S1-VH": 15.0,
+    "S1-RATIO": 15.0,
+    "S1-RATIO-AIS": 15.0,
+    "S2-TCI": 10.0,
+    "S2-TCI-AIS": 10.0,
+    "S2-NDVI": 10.0,
+    "S2-NIRFC": 10.0,
+    "S2-AP": 20.0,
+    "S2-NDBI": 20.0,
+    "S2-NDBI_CLEAN": 20.0,
+    "S2-NDRE": 20.0,
+    "S2-NBR": 20.0,
+    "S2-CAMO": 20.0,
+    "FUSED-LIFE-MACHINE": 10.0,
+    "FUSED-RADAR-BURN": 10.0,
+    "FUSED-TARGET-PROBE-V2": 10.0,
+}
+
+
+def identify_tif(tif_path: str) -> tuple[str, str]:
+    """
+    Identifies a visual TIFF based on its path and filename.
+    Returns (product_id, legend_id).
+    """
+    filename = os.path.basename(tif_path)
+    parts = tif_path.split(os.sep)
+
+    try:
+        # We assume the path contains 'visual' to determine sensor/product
+        idx = parts.index("visual")
+        sat = parts[idx + 1].upper()  # S1, S2, FUSED, ROI
+    except (ValueError, IndexError):
+        return "UNKNOWN", "S2-TCI"
+
+    if sat == "FUSED":
+        # Extract product from folder or filename
+        p_type = parts[idx + 2].upper()
+        if p_type == "FUSED" or p_type == filename.upper():
+            m = re.search(
+                r"-(LIFE-MACHINE|RADAR-BURN|TARGET-PROBE-V2)\.tif", filename, re.I
+            )
+            p_type = m.group(1).upper() if m else "UNKNOWN"
+        return f"FUSED-{p_type}", p_type
+
+    if sat == "ROI":
+        fn_no_ext = filename.rsplit(".", 1)[0]
+        fn_parts = fn_no_ext.split("_")
+        if len(fn_parts) >= 3:
+            roi_name = fn_parts[0]
+            p_suffix = "_".join(fn_parts[1:-1]).upper()
+            norm_suffix = p_suffix.replace("_", "-")
+            product_id = f"ROI-{roi_name}-{p_suffix}"
+
+            if norm_suffix in ["VV", "VH", "RATIO", "RATIO-AIS"]:
+                legend_id = f"S1-{norm_suffix}"
+            elif norm_suffix in ["LIFE-MACHINE", "RADAR-BURN", "TARGET-PROBE-V2"]:
+                legend_id = f"FUSED-{norm_suffix}"
+            else:
+                legend_id = f"S2-{norm_suffix}"
+            return product_id, legend_id
+        return f"ROI-{filename}", "S2-TCI"
+
+    # Standard S1/S2
+    p_type = parts[idx + 2].upper()
+    return f"{sat}-{p_type}", f"{sat}-{p_type}"
+
+
 def generate_sidecar(
     tif_path: str,
-    product_type: str,
-    legend_id: str,
+    product_type: Optional[str] = None,
+    legend_id: Optional[str] = None,
     effective_res: Optional[float] = None,
     cloud_cover: Optional[float] = None,
 ) -> None:
     """
     Generates a .json sidecar for a Visual TIF.
-    Contains acquisition time, precise footprint (GeoJSON-like), and product metadata.
-    Optimized: Downsamples mask for extreme speed gain in vectorization.
+    If product_type or legend_id are missing, it attempts to self-identify.
     """
     if not os.path.exists(tif_path):
         return
+
+    # Self-identify if needed
+    if not product_type or not legend_id:
+        auto_prod, auto_legend = identify_tif(tif_path)
+        product_type = product_type or auto_prod
+        legend_id = legend_id or auto_legend
+
+    if not effective_res:
+        effective_res = RES_MAP.get(product_type) or RES_MAP.get(legend_id)
 
     sidecar_path: str = tif_path.replace(".tif", ".json")
     start_time = time.time()
@@ -174,26 +252,31 @@ def generate_sidecar(
             filename: str = os.path.basename(tif_path)
             timestamp: str = "Unknown"
 
-            s1_match: Optional[re.Match] = re.search(r"S1_(\d{8}T\d{6})", filename)
-            s2_match: Optional[re.Match] = re.search(r"-(\d{8}T\d{6}Z)", filename)
-            roi_match: Optional[re.Match] = re.search(
-                r"_(\d{4}-\d{2}-\d{2}T\d{6}Z)", filename
-            )
-
-            if s1_match:
-                raw_t: str = s1_match.group(1)
-                timestamp = (
-                    f"{raw_t[:4]}-{raw_t[4:6]}-{raw_t[6:8]}T"
-                    f"{raw_t[9:11]}:{raw_t[11:13]}:{raw_t[13:15]}Z"
-                )
-            elif s2_match:
-                raw_t_s2: str = s2_match.group(1)
-                timestamp = (
-                    f"{raw_t_s2[:4]}-{raw_t_s2[4:6]}-{raw_t_s2[6:8]}T"
-                    f"{raw_t_s2[9:11]}:{raw_t_s2[11:13]}:{raw_t_s2[13:15]}Z"
-                )
-            elif roi_match:
-                timestamp = roi_match.group(1)
+            # Check if it's an ROI file first (Name_Prod_Time.tif)
+            fn_no_ext = filename.rsplit(".", 1)[0]
+            fn_parts = fn_no_ext.split("_")
+            
+            if len(fn_parts) >= 3 and re.match(r"^\d{4}-\d{2}-\d{2}T\d{6}Z$", fn_parts[-1]):
+                raw_t = fn_parts[-1]
+                # raw_t is like 2026-05-24T100000Z
+                timestamp = f"{raw_t[:10]}T{raw_t[11:13]}:{raw_t[13:15]}:{raw_t[15:17]}Z"
+            else:
+                # Standard S1/S2 parsing
+                s1_match: Optional[re.Match] = re.search(r"S1_(\d{8}T\d{6})", filename)
+                s2_match: Optional[re.Match] = re.search(r"-(\d{8}T\d{6}Z)", filename)
+                
+                if s1_match:
+                    raw_t = s1_match.group(1)
+                    timestamp = (
+                        f"{raw_t[:4]}-{raw_t[4:6]}-{raw_t[6:8]}T"
+                        f"{raw_t[9:11]}:{raw_t[11:13]}:{raw_t[13:15]}Z"
+                    )
+                elif s2_match:
+                    raw_t_s2 = s2_match.group(1)
+                    timestamp = (
+                        f"{raw_t_s2[:4]}-{raw_t_s2[4:6]}-{raw_t_s2[6:8]}T"
+                        f"{raw_t_s2[9:11]}:{raw_t_s2[11:13]}:{raw_t_s2[13:15]}Z"
+                    )
 
             metadata = {
                 "product": product_type,

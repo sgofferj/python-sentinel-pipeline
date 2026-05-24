@@ -31,6 +31,7 @@ import constants as c
 import functions as func
 import metadata_engine as meta
 import inventory_manager
+import notifications as notify
 
 # Register HEIF opener for Pillow
 pillow_heif.register_heif_opener()
@@ -141,6 +142,27 @@ def create_social_image(src_path: str, base_dst_path: str) -> str:
             return heic_path
     except Exception as e:
         print(f"Error creating social image: {e}", flush=True)
+        return ""
+
+
+def create_full_image(src_path: str, base_dst_path: str) -> str:
+    """
+    Creates a full-size non-georeferenced JPEG from a TIFF.
+    Returns the path to the created image.
+    """
+    try:
+        with Image.open(src_path) as img:
+            if img.mode != "RGB":
+                rgb_img = img.convert("RGB")
+            else:
+                rgb_img = img
+
+            dst_path = base_dst_path + "_full.jpg"
+            # High quality JPEG, no downscaling
+            rgb_img.save(dst_path, "JPEG", quality=90, optimize=True)
+            return dst_path
+    except Exception as e:
+        print(f"Error creating full image: {e}", flush=True)
         return ""
 
 
@@ -308,8 +330,11 @@ def run_roi_stage(process_all: bool = False) -> int:
 
             coverage = calculate_coverage(roi_bbox, layer)
             if coverage >= roi_match_threshold:
-                simple_prod = product_type.split("-")[-1]
-                dst_filename = f"{roi_name}_{simple_prod}_{iso_clean}.tif"
+                # Use full product type (excluding sensor prefix) for better clarity
+                # e.g., S2-NDBI_CLEAN -> NDBI_CLEAN, FUSED-RADAR-BURN -> RADAR-BURN
+                p_suffix = product_type.split("-", 1)[1] if "-" in product_type else product_type
+                
+                dst_filename = f"{roi_name}_{p_suffix}_{iso_clean}.tif"
                 dst_path = os.path.join(c.DIRS["VIS_ROI"], dst_filename)
 
                 if not os.path.exists(dst_path):
@@ -324,22 +349,42 @@ def run_roi_stage(process_all: bool = False) -> int:
                     # Label it as ROI-Name-Prod for clear identification
                     meta.generate_sidecar(
                         dst_path,
-                        f"ROI-{roi_name}-{simple_prod}",
+                        f"ROI-{roi_name}-{p_suffix}",
                         product_type,  # Keep original legend
                         effective_res=resolution,
+                        cloud_cover=layer.get("cloud_cover"),
                     )
                     crops_created += 1
 
-                # Bluesky posting
-                if bsky_post_enabled and roi_name_raw in bsky_roi_names:
-                    # Check if already posted (we can use a small marker file or just assume
-                    # if TIF is new)
-                    # For now, if we just created the TIF, we post.
-                    # In standalone mode, we might want to be careful.
-                    social_base = os.path.join(
-                        c.DIRS["VIS_ROI"],
-                        f"{roi_name}_{simple_prod}_{iso_clean}_social",
-                    )
+                # Apprise and Bluesky posting
+                apprise_url = roi.get("apprise_url", "")
+                social_needed = (
+                    bsky_post_enabled and roi_name_raw in bsky_roi_names
+                )
+                
+                social_base = os.path.join(
+                    c.DIRS["VIS_ROI"],
+                    f"{roi_name}_{p_suffix}_{iso_clean}_social",
+                )
+
+                # Apprise gets full size JPEG
+                if apprise_url:
+                    full_image = create_full_image(dst_path, social_base)
+                    if full_image:
+                        msg = (
+                            f"New {p_suffix} image for ROI {roi_name}\n"
+                            f"Acquired: {acq_time}\n"
+                            f"Satellite: {constellation}"
+                        )
+                        notify.send_notification(
+                            message=msg,
+                            title=f"ROI Update: {roi_name}",
+                            urls=apprise_url,
+                            attachment=full_image,
+                        )
+
+                # Bluesky gets downscaled social image
+                if social_needed:
                     image_path = create_social_image(dst_path, social_base)
                     if image_path:
                         post_to_bsky(
@@ -350,9 +395,6 @@ def run_roi_stage(process_all: bool = False) -> int:
                             constellation,
                             image_path,
                         )
-                        # Clean up social image after posting?
-                        # The user didn't specify, but it might be good to keep or delete.
-                        # I'll keep it for now as it's non-georeferenced and small.
 
     print(f"ROI stage complete. {crops_created} crops created.", flush=True)
     if crops_created > 0:

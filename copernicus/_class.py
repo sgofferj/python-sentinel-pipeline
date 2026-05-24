@@ -261,10 +261,25 @@ class connect:  # pylint: disable=invalid-name
                 r = req.get(url, headers=headers, stream=True, timeout=120)
                 r.raise_for_status()
 
+                total_size = int(r.headers.get("content-length", 0))
+
                 with open(f"{directory}/{filename}.zip", "wb") as file:
+                    downloaded = 0
                     for chunk in r.iter_content(chunk_size=1024 * 1024):
                         if chunk:
                             file.write(chunk)
+                            downloaded += len(chunk)
+                            if total_size > 0:
+                                percent = (downloaded / total_size) * 100
+                                bar_length = 40
+                                filled = int(bar_length * downloaded // total_size)
+                                bar = "█" * filled + "-" * (bar_length - filled)
+                                print(
+                                    f"\r|{bar}| {percent:.1f}% ({downloaded / (1024*1024):.1f}/{total_size / (1024*1024):.1f} MB)",
+                                    end="",
+                                    flush=True,
+                                )
+                    print()  # Final newline
                 return True
             except (req.exceptions.RequestException, ConnectionError) as e:
                 print(f"Download failed: {e}", flush=True)

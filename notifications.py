@@ -17,9 +17,16 @@ import os
 import apprise
 
 
-def send_notification(message: str, title: str = "Sentinel Pipeline") -> None:
-    """Sends a notification via Apprise if APPRISE_URLS is set."""
-    urls = os.getenv("APPRISE_URLS")
+def send_notification(
+    message: str,
+    title: str = "Sentinel Pipeline",
+    urls: str = None,
+    attachment: str = None,
+) -> None:
+    """Sends a notification via Apprise."""
+    if not urls:
+        urls = os.getenv("APPRISE_URLS")
+
     if not urls:
         return
 
@@ -32,9 +39,16 @@ def send_notification(message: str, title: str = "Sentinel Pipeline") -> None:
 
     if len(apobj) > 0:
         print(f"Sending notification to {len(apobj)} targets...", flush=True)
+
+        attach = None
+        if attachment and os.path.exists(attachment):
+            # AppriseAttachment can take a file path
+            attach = apprise.AppriseAttachment(attachment)
+
         apobj.notify(
             body=message,
             title=title,
+            attach=attach,
         )
     else:
-        print("Warning: APPRISE_URLS set but no valid URLs found.", flush=True)
+        print("Warning: No valid Apprise URLs found.", flush=True)

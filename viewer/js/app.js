@@ -76,6 +76,7 @@ let hoverSource;
 let highlightSource;
 let inventoryData = [];
 let s2SortMode = 'product'; // 'product' or 'grid'
+let roiSortMode = 'product'; // 'product' or 'roi'
 let identifyOpticalLayer;
 let identifyRadarLayer;
 let masterLegends = {}; 
@@ -92,6 +93,7 @@ function saveSettings() {
         zoom: view.getZoom(),
         activeLayerPaths: Object.keys(activeLayers).filter(path => activeLayers[path].layer.getVisible()),
         s2SortMode: s2SortMode,
+        roiSortMode: roiSortMode,
         expandedGroups: Array.from(document.querySelectorAll('.sat-group:not(.collapsed), .grid-group:not(.collapsed), .prod-group:not(.collapsed)'))
             .map(el => el.id).filter(id => !!id),
         identifyOptical: !!identifyOpticalLayer,
@@ -372,6 +374,7 @@ async function loadInventory() {
     const t = UI_TRANSLATIONS[currentLang];
     const saved = loadSettings();
     if (saved && saved.s2SortMode) s2SortMode = saved.s2SortMode;
+    if (saved && saved.roiSortMode) roiSortMode = saved.roiSortMode;
 
     try {
         const response = await fetch(INVENTORY_URL);
@@ -668,9 +671,22 @@ function getGridSquare(l) {
     return fn.startsWith('T') ? fn.split('-')[0] : "";
 }
 
+function getRoiName(l) {
+    if (!l.product.startsWith("ROI")) return "";
+    const fn = l.path.split('/').pop();
+    // Format: ROI-Name-Prod-Time.tif or Name_Prod_Time.tif
+    // The current roi_manager uses Name_Prod_Time.tif
+    return fn.split('_')[0];
+}
+
 function setS2SortMode(mode) {
     if (s2SortMode === mode) return;
     s2SortMode = mode; saveSettings(); renderLayerPicker(inventoryData);
+}
+
+function setRoiSortMode(mode) {
+    if (roiSortMode === mode) return;
+    roiSortMode = mode; saveSettings(); renderLayerPicker(inventoryData);
 }
 
 function renderLayerPicker(layers) {
@@ -680,7 +696,7 @@ function renderLayerPicker(layers) {
     const expandedIds = new Set(saved ? saved.expandedGroups : []);
     
     if (!saved) {
-        ['S2', 'S1', 'FUSED'].forEach(sat => {
+        ['S2', 'S1', 'FUSED', 'ROI'].forEach(sat => {
             const old = document.getElementById(`group-${sat}`);
             if (old && !old.classList.contains('collapsed')) expandedIds.add(`group-${sat}`);
         });
@@ -689,24 +705,50 @@ function renderLayerPicker(layers) {
     picker.innerHTML = ''; 
     const groups = {};
     layers.forEach(l => {
-        const [sat, ...rest] = l.product.split('-');
-        const type = rest.join('-');
+        let sat, type;
+        if (l.product.startsWith('ROI-')) {
+            sat = 'ROI';
+            // product is ROI-Name-ProductType
+            const parts = l.product.split('-');
+            
+            const lastPart = parts[parts.length - 1];
+            const lastTwo = parts.slice(-2).join('-');
+            
+            // Use the base product type for grouping (TCI, NDBI_CLEAN, etc.)
+            if (PRODUCT_TRANSLATIONS[currentLang][lastTwo]) {
+                type = lastTwo;
+            } else {
+                type = lastPart;
+            }
+        } else {
+            const parts = l.product.split('-');
+            sat = parts[0];
+            type = parts.slice(1).join('-');
+        }
         if (!groups[sat]) groups[sat] = {};
         if (!groups[sat][type]) groups[sat][type] = [];
         groups[sat][type].push(l);
     });
 
-    ['S2', 'S1', 'FUSED'].forEach(sat => {
+    ['S2', 'S1', 'FUSED', 'ROI'].forEach(sat => {
         if (!groups[sat]) return;
         const satMeta = pt[sat] || { title: sat, subtitle: "" };
         const satDiv = document.createElement('div');
         satDiv.className = 'sat-group' + (expandedIds.has(`group-${sat}`) ? '' : ' collapsed');
         satDiv.id = `group-${sat}`;
+        
+        let sortRow = '';
+        if (sat === 'S2') {
+            sortRow = `<div class="sort-row"><button class="sort-btn ${s2SortMode === 'product' ? 'active' : ''}" onclick="event.stopPropagation(); setS2SortMode('product')">${UI_TRANSLATIONS[currentLang].by_product}</button><button class="sort-btn ${s2SortMode === 'grid' ? 'active' : ''}" onclick="event.stopPropagation(); setS2SortMode('grid')">${UI_TRANSLATIONS[currentLang].by_grid}</button></div>`;
+        } else if (sat === 'ROI') {
+            sortRow = `<div class="sort-row"><button class="sort-btn ${roiSortMode === 'product' ? 'active' : ''}" onclick="event.stopPropagation(); setRoiSortMode('product')">${UI_TRANSLATIONS[currentLang].by_product}</button><button class="sort-btn ${roiSortMode === 'roi' ? 'active' : ''}" onclick="event.stopPropagation(); setRoiSortMode('roi')">${UI_TRANSLATIONS[currentLang].by_roi}</button></div>`;
+        }
+
         satDiv.innerHTML = `
             <div class="sat-title" onclick="this.parentElement.classList.toggle('collapsed'); saveSettings();">
                 <span>${satMeta.title} <small>${satMeta.subtitle}</small></span>
             </div>
-            ${sat === 'S2' ? `<div class="sort-row"><button class="sort-btn ${s2SortMode === 'product' ? 'active' : ''}" onclick="event.stopPropagation(); setS2SortMode('product')">${UI_TRANSLATIONS[currentLang].by_product}</button><button class="sort-btn ${s2SortMode === 'grid' ? 'active' : ''}" onclick="event.stopPropagation(); setS2SortMode('grid')">${UI_TRANSLATIONS[currentLang].by_grid}</button></div>` : ''}
+            ${sortRow}
             <div class="prod-container"></div>
         `;
         const prodContainer = satDiv.querySelector('.prod-container');
@@ -742,6 +784,41 @@ function renderLayerPicker(layers) {
                     typeDiv.innerHTML = `<div class="prod-title" onclick="this.parentElement.classList.toggle('collapsed'); saveSettings();">${pt[type] ? pt[type].title : type}</div><div class="layer-container"></div>`;
                     const lc = typeDiv.querySelector('.layer-container');
                     gridGroups[grid][type].sort((a,b) => b.acquisition_time.localeCompare(a.acquisition_time)).forEach(l => lc.appendChild(createLayerItem(l)));
+                    gpc.appendChild(typeDiv);
+                });
+                prodContainer.appendChild(gridDiv);
+            });
+        } else if (sat === 'ROI' && roiSortMode === 'roi') {
+            const gridGroups = {};
+            Object.keys(groups[sat]).forEach(type => {
+                groups[sat][type].forEach(l => {
+                    const roiName = getRoiName(l) || UI_TRANSLATIONS[currentLang].unknown;
+                    if (!gridGroups[roiName]) gridGroups[roiName] = {};
+                    if (!gridGroups[roiName][type]) gridGroups[roiName][type] = [];
+                    gridGroups[roiName][type].push(l);
+                });
+            });
+
+            Object.keys(gridGroups).sort().forEach(roiName => {
+                const gridDiv = document.createElement('div');
+                const gid = `grid-ROI-${roiName}`;
+                gridDiv.className = 'grid-group' + (expandedIds.has(gid) ? '' : ' collapsed');
+                gridDiv.id = gid;
+                gridDiv.innerHTML = `<div class="grid-title" onclick="this.parentElement.classList.toggle('collapsed'); saveSettings();">${roiName}</div><div class="prod-container"></div>`;
+                gridDiv.querySelector('.grid-title').onmouseenter = () => {
+                    const rep = gridGroups[roiName]['ROI-TCI'] ? gridGroups[roiName]['ROI-TCI'][0] : gridGroups[roiName][Object.keys(gridGroups[roiName])[0]][0];
+                    if (rep) showLayerHover(rep);
+                };
+                gridDiv.querySelector('.grid-title').onmouseleave = () => hoverSource.clear();
+                const gpc = gridDiv.querySelector('.prod-container');
+                Object.keys(gridGroups[roiName]).sort().forEach(type => {
+                    const typeDiv = document.createElement('div');
+                    const tid = `prod-ROI-${roiName}-${type}`;
+                    typeDiv.className = 'prod-group' + (expandedIds.has(tid) ? '' : ' collapsed');
+                    typeDiv.id = tid;
+                    typeDiv.innerHTML = `<div class="prod-title" onclick="this.parentElement.classList.toggle('collapsed'); saveSettings();">${pt[type] ? pt[type].title : type}</div><div class="layer-container"></div>`;
+                    const lc = typeDiv.querySelector('.layer-container');
+                    gridGroups[roiName][type].sort((a,b) => b.acquisition_time.localeCompare(a.acquisition_time)).forEach(l => lc.appendChild(createLayerItem(l)));
                     gpc.appendChild(typeDiv);
                 });
                 prodContainer.appendChild(gridDiv);
@@ -782,11 +859,15 @@ function createLayerItem(l) {
     const isActive = activeLayers[l.path] && activeLayers[l.path].layer.getVisible();
     div.className = 'layer-item' + (isActive ? ' active' : '');
     const grid = getGridSquare(l); if (grid) div.dataset.grid = grid;
+    const roiName = getRoiName(l); if (roiName) div.dataset.roi = roiName;
     div.dataset.time = l.acquisition_time;
     const t = UI_TRANSLATIONS[currentLang];
     const friendlyTime = (new Date(l.acquisition_time)).toLocaleString(currentLang === 'fi' ? 'fi-FI' : (currentLang === 'sv' ? 'sv-SE' : (currentLang === 'de' ? 'de-DE' : 'en-GB')), { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) + "Z";
     const safeId = `chk-${l.path.replace(/[^a-zA-Z0-9]/g, '_')}`;
-    div.innerHTML = `<input type="checkbox" id="${safeId}" ${isActive ? 'checked' : ''}><div class="layer-info"><span class="layer-time">${grid ? grid + ", " : ""}${friendlyTime}</span><span class="layer-status">${l.cloud_cover != null ? `☁️ ${l.cloud_cover}% ` : ""}${l.acquisition_time.split("T")[0]}</span></div><div class="layer-actions"><button class="dl-btn" title="${t.download_tif}"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 16l-5-5h3V4h4v7h3l-5 5zm9 2v2H3v-2h18z"/></svg></button><span class="file-size">${formatSize(l.file_size_bytes)}</span></div>`;
+    
+    let label = (grid ? grid + ", " : "") + (roiName ? roiName + ", " : "") + friendlyTime;
+    
+    div.innerHTML = `<input type="checkbox" id="${safeId}" ${isActive ? 'checked' : ''}><div class="layer-info"><span class="layer-time">${label}</span><span class="layer-status">${l.cloud_cover != null ? `☁️ ${l.cloud_cover}% ` : ""}${l.acquisition_time.split("T")[0]}</span></div><div class="layer-actions"><button class="dl-btn" title="${t.download_tif}"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 16l-5-5h3V4h4v7h3l-5 5zm9 2v2H3v-2h18z"/></svg></button><span class="file-size">${formatSize(l.file_size_bytes)}</span></div>`;
     div.onclick = (e) => {
         if (e.target.closest('.dl-btn')) { e.stopPropagation(); downloadFile(window.location.href.split('index.html')[0].split('?')[0] + IMAGE_BASE_URL + l.path, l.path.split('/').pop()); return; }
         if (e.target.tagName !== 'INPUT') { const chk = div.querySelector('input'); chk.checked = !chk.checked; toggleLayer(l, chk.checked, div); }

@@ -11,11 +11,10 @@
 
 """
 Maintenance utility to regenerate all .json sidecar files for existing visual TIFFs.
-This updates sidecars with new fields like precise footprints and resolution.
+Now delegates all identification and generation logic to metadata_engine.py.
 """
 
 import os
-import re
 import metadata_engine
 import inventory_manager
 import constants as c
@@ -26,25 +25,6 @@ def rebuild_all():
     visual_root = os.path.join(c.DIRS["OUT"], "visual")
     count = 0
 
-    # Resolution mapping (Effective resolution in m/px)
-    RES_MAP = {
-        "S1-VV": 15.0,
-        "S1-VH": 15.0,
-        "S1-RATIO": 15.0,
-        "S2-TCI": 10.0,
-        "S2-NDVI": 10.0,
-        "S2-NIRFC": 10.0,
-        "S2-AP": 20.0,
-        "S2-NDBI": 20.0,
-        "S2-NDBI_CLEAN": 20.0,
-        "S2-NDRE": 20.0,
-        "S2-NBR": 20.0,
-        "S2-CAMO": 20.0,
-        "LIFE-MACHINE": 10.0,
-        "RADAR-BURN": 10.0,
-        "TARGET-PROBE-V2": 10.0,
-    }
-
     # Walk through all visual subdirectories
     for root, _, files in os.walk(visual_root):
         for file in files:
@@ -52,69 +32,9 @@ def rebuild_all():
                 tif_path = os.path.join(root, file)
 
                 try:
-                    # Determine product type and legend ID from directory structure
-                    # Path is like: .../visual/s2/ndvi/T35VLG-...-NDVI.tif
-                    # Fused: .../visual/fused/T34VFM-...-LIFE-MACHINE.tif
-                    parts = tif_path.split(os.sep)
-                    # Find index of 'visual'
-                    idx = parts.index("visual")
-                    sat = parts[idx + 1].upper()  # S1, S2, FUSED
-
-                    if sat == "FUSED":
-                        # For Fused, the product name is the suffix after the second dash in filename
-                        # e.g. T34VFM-20260408T094031Z-LIFE-MACHINE.tif -> LIFE-MACHINE
-                        # Or just use parts[idx+2] if it's organized by subdir
-                        p_type = parts[idx + 2].upper()
-                        # If its flat in fused/ dir, extract from filename
-                        if (
-                            p_type == os.path.basename(tif_path).upper()
-                            or p_type == "FUSED"
-                        ):
-                            m = re.search(
-                                r"-(LIFE-MACHINE|RADAR-BURN|TARGET-PROBE-V2)\.tif",
-                                file,
-                                re.I,
-                            )
-                            if m:
-                                p_type = m.group(1).upper()
-
-                        product_id = f"FUSED-{p_type}"
-                        legend_id = p_type
-                    elif sat == "ROI":
-                        # Filename: {roi_name}_{simple_prod}_{iso_clean}.tif
-                        # e.g. My ROI_TCI_2026-05-05T093041Z.tif
-                        m = re.search(
-                            r"^(.*)_(.*)_(\d{4}-\d{2}-\d{2}T\d{6}Z)\.tif$", file, re.I
-                        )
-                        if m:
-                            roi_name = m.group(1)
-                            p_type = m.group(2).upper()
-                            product_id = f"ROI-{roi_name}-{p_type}"
-                            # Try to determine legend from p_type
-                            if p_type in ["VV", "VH", "RATIO"]:
-                                legend_id = f"S1-{p_type}"
-                            else:
-                                legend_id = f"S2-{p_type}"
-                        else:
-                            product_id = f"ROI-{file}"
-                            legend_id = "S2-TCI"
-                    else:
-                        p_type = parts[idx + 2].upper()  # NDVI, VH, etc.
-                        product_id = f"{sat}-{p_type}"
-                        legend_id = product_id
-
-                    eff_res = RES_MAP.get(product_id)
-                    if eff_res is None:
-                        # Fallback for FUSED and ROI
-                        eff_res = RES_MAP.get(legend_id)
-
-                    print(
-                        f"Regenerating sidecar for: {file} ({product_id}) @ {eff_res}m",
-                        flush=True,
-                    )
-                    metadata_engine.generate_sidecar(
-                        tif_path, product_id, legend_id, effective_res=eff_res
-                    )
+                    # Engine now handles identification, legend mapping, 
+                    # resolution and timestamp extraction automatically.
+                    metadata_engine.generate_sidecar(tif_path)
                     count += 1
                 except Exception as e:  # pylint: disable=broad-exception-caught
                     print(
