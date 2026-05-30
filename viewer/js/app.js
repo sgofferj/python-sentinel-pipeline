@@ -838,8 +838,11 @@ function renderLayerPicker(layers) {
                 typeDiv.innerHTML = `<div class="prod-title" onclick="this.parentElement.classList.toggle('collapsed'); saveSettings();">${pt[type] ? pt[type].title : type} <span class="subtitle">${pt[type] ? pt[type].subtitle : ''}</span></div><div class="layer-container"></div>`;
                 const lc = typeDiv.querySelector('.layer-container');
                 groups[sat][type].sort((a,b) => {
-                    if (sat === "S2") { const ga = getGridSquare(a), gb = getGridSquare(b); if (ga !== gb) return ga.localeCompare(gb); }
-                    return b.acquisition_time.localeCompare(a.acquisition_time);
+                    const timeComp = b.acquisition_time.localeCompare(a.acquisition_time);
+                    if (sat === "S2" && timeComp === 0) {
+                        return getGridSquare(a).localeCompare(getGridSquare(b));
+                    }
+                    return timeComp;
                 }).forEach(l => lc.appendChild(createLayerItem(l)));
                 prodContainer.appendChild(typeDiv);
             });

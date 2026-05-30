@@ -48,6 +48,8 @@ const UI_TRANSLATIONS = {
         processing: "Bearbetar data...",
         unknown: "Okänd",
         acq_range: "Tidsintervall",
+        fullscreen: "Helskärm",
+        screenshot: "Skärmdump",
         roi: "ROI",
         by_roi: "Per område"
     },
@@ -73,6 +75,8 @@ const UI_TRANSLATIONS = {
         processing: "Processing data...",
         unknown: "Unknown",
         acq_range: "Range",
+        fullscreen: "Fullscreen",
+        screenshot: "Screenshot",
         roi: "ROI",
         by_roi: "By ROI"
     },
