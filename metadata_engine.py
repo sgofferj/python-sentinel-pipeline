@@ -251,32 +251,48 @@ def generate_sidecar(
             # Extract Acquisition Time from filename
             filename: str = os.path.basename(tif_path)
             timestamp: str = "Unknown"
+            rel_orbit = None
+            orbit_dir = None
 
             # Check if it's an ROI file first (Name_Prod_Time.tif)
             fn_no_ext = filename.rsplit(".", 1)[0]
             fn_parts = fn_no_ext.split("_")
-            
-            if len(fn_parts) >= 3 and re.match(r"^\d{4}-\d{2}-\d{2}T\d{6}Z$", fn_parts[-1]):
+
+            if len(fn_parts) >= 3 and re.match(
+                r"^\d{4}-\d{2}-\d{2}T\d{6}Z$", fn_parts[-1]
+            ):
                 raw_t = fn_parts[-1]
                 # raw_t is like 2026-05-24T100000Z
-                timestamp = f"{raw_t[:10]}T{raw_t[11:13]}:{raw_t[13:15]}:{raw_t[15:17]}Z"
+                timestamp = (
+                    f"{raw_t[:10]}T{raw_t[11:13]}:{raw_t[13:15]}:{raw_t[15:17]}Z"
+                )
             else:
                 # Standard S1/S2 parsing
                 s1_match: Optional[re.Match] = re.search(r"S1_(\d{8}T\d{6})", filename)
                 s2_match: Optional[re.Match] = re.search(r"-(\d{8}T\d{6}Z)", filename)
-                
+
                 if s1_match:
                     raw_t = s1_match.group(1)
                     timestamp = (
                         f"{raw_t[:4]}-{raw_t[4:6]}-{raw_t[6:8]}T"
                         f"{raw_t[9:11]}:{raw_t[11:13]}:{raw_t[13:15]}Z"
                     )
+                    # Extract Orbit Info from S1 metadata
+                    meta_dict = src.tags()
+                    rel_orbit = meta_dict.get("RELATIVE_ORBIT_NUMBER")
+                    orbit_dir = meta_dict.get("ORBIT_DIRECTION")
                 elif s2_match:
                     raw_t_s2 = s2_match.group(1)
                     timestamp = (
                         f"{raw_t_s2[:4]}-{raw_t_s2[4:6]}-{raw_t_s2[6:8]}T"
                         f"{raw_t_s2[9:11]}:{raw_t_s2[11:13]}:{raw_t_s2[13:15]}Z"
                     )
+                    # S2 metadata
+                    meta_dict = src.tags()
+                    # S2 doesn't always have these in the TIF tags if not explicitly set
+                    # But we can try to get them from GDAL metadata
+                    rel_orbit = meta_dict.get("RELATIVE_ORBIT_NUMBER")
+                    orbit_dir = meta_dict.get("PASS_DIRECTION")
 
             metadata = {
                 "product": product_type,
@@ -290,6 +306,11 @@ def generate_sidecar(
                 "legend_id": legend_id,
                 "crs": "EPSG:3857",
             }
+
+            if rel_orbit:
+                metadata["relative_orbit"] = rel_orbit
+            if orbit_dir:
+                metadata["orbit_direction"] = orbit_dir
 
             if cloud_cover is not None:
                 metadata["cloud_cover"] = round(float(cloud_cover), 1)

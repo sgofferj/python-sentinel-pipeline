@@ -19,13 +19,14 @@ import argparse
 import json
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 import pillow_heif  # type: ignore
-from atproto import Client  # type: ignore
+from atproto import Client, client_utils  # type: ignore
 from osgeo import gdal  # type: ignore
 from PIL import Image
 from shapely.geometry import box, shape  # type: ignore
+from shapely.ops import unary_union  # type: ignore
 
 import constants as c
 import functions as func
@@ -56,29 +57,34 @@ def load_roi_config() -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
         return {}, []
 
 
-def calculate_coverage(roi_bbox_str: str, sidecar_data: Dict[str, Any]) -> float:
-    """Calculates the percentage of ROI covered by the product footprint."""
+def calculate_coverage(roi_bbox_str: str, layer_list: List[Dict[str, Any]]) -> float:
+    """Calculates the percentage of ROI covered by the union of multiple product footprints."""
     try:
         west, south, east, north = map(float, roi_bbox_str.split(","))
         roi_poly = box(west, south, east, north)
 
-        footprint_raw = sidecar_data.get("footprint")
-        if not footprint_raw:
-            # Fallback to bounds if footprint is missing
-            bounds = sidecar_data.get("bounds")  # [[S, W], [N, E]]
-            if bounds:
-                product_poly = box(
-                    bounds[0][1], bounds[0][0], bounds[1][1], bounds[1][0]
-                )
+        product_polys = []
+        for layer in layer_list:
+            footprint_raw = layer.get("footprint")
+            if not footprint_raw:
+                # Fallback to bounds if footprint is missing
+                bounds = layer.get("bounds")  # [[S, W], [N, E]]
+                if bounds:
+                    product_polys.append(
+                        box(bounds[0][1], bounds[0][0], bounds[1][1], bounds[1][0])
+                    )
             else:
-                return 0.0
-        else:
-            product_poly = shape(footprint_raw)
+                product_polys.append(shape(footprint_raw))
 
-        if not roi_poly.intersects(product_poly):
+        if not product_polys:
             return 0.0
 
-        intersection_area = roi_poly.intersection(product_poly).area
+        combined_product_poly = unary_union(product_polys)
+
+        if not roi_poly.intersects(combined_product_poly):
+            return 0.0
+
+        intersection_area = roi_poly.intersection(combined_product_poly).area
         roi_area = roi_poly.area
 
         if roi_area == 0:
@@ -90,58 +96,72 @@ def calculate_coverage(roi_bbox_str: str, sidecar_data: Dict[str, Any]) -> float
         return 0.0
 
 
-def crop_product(src_path: str, dst_path: str, bbox_str: str) -> bool:
-    """Crops a TIFF file to the specified WGS84 bounding box."""
+def crop_product(src_paths: List[str], dst_path: str, bbox_str: str) -> bool:
+    """Crops one or more TIFF files to the specified WGS84 bounding box (mosaicing if needed)."""
     try:
         west, south, east, north = map(float, bbox_str.split(","))
-        # Use gdal.Warp for cropping
+        # Use gdal.Warp for cropping and mosaicing
         warp_options = gdal.WarpOptions(
             format="GTiff",
             outputBounds=[west, south, east, north],
             outputBoundsSRS="EPSG:4326",
             creationOptions=["COMPRESS=DEFLATE", "TILED=YES", "BIGTIFF=YES"],
+            dstAlpha=True,
         )
-        gdal.Warp(dst_path, src_path, options=warp_options)
+        gdal.Warp(dst_path, src_paths, options=warp_options)
         return True
     except Exception as e:
-        print(f"Error cropping {src_path} to ROI: {e}", flush=True)
+        print(f"Error cropping {src_paths} to ROI: {e}", flush=True)
         return False
 
 
 def create_social_image(src_path: str, base_dst_path: str) -> str:
     """
-    Creates a non-georeferenced JPEG (or HEIC if >2MB) from a TIFF.
-    Downscales to 4000px if needed.
+    Creates a non-georeferenced HEIC image from a TIFF for Bluesky.
+    Iteratively scales and compresses to stay under Bluesky's 2MB limit.
     Returns the path to the created image.
     """
     try:
-        # Load image with Pillow
         with Image.open(src_path) as img:
-            # Downscale if needed
-            max_size = 4000
-            if img.width > max_size or img.height > max_size:
-                img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-
             # Convert to RGB (remove alpha/extras if any)
             if img.mode != "RGB":
                 rgb_img = img.convert("RGB")
             else:
                 rgb_img = img
 
-            # Try JPEG first
-            jpg_path = base_dst_path + ".jpg"
-            rgb_img.save(jpg_path, "JPEG", quality=85, optimize=True)
+            max_dim = 4000
+            quality = 80
+            dst_path = base_dst_path + ".heic"
 
-            # Check size
-            if os.path.getsize(jpg_path) <= 2 * 1024 * 1024:
-                return jpg_path
+            # Iterative downscaling and compression
+            while True:
+                # Current attempt with current max_dim
+                if rgb_img.width > max_dim or rgb_img.height > max_dim:
+                    temp_img = rgb_img.copy()
+                    temp_img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+                else:
+                    temp_img = rgb_img
 
-            # If > 2MB, try HEIC
-            heic_path = base_dst_path + ".heic"
-            rgb_img.save(heic_path, "HEIF", quality=70)
-            return heic_path
+                # Save as HEIF (HEIC)
+                temp_img.save(dst_path, "HEIF", quality=quality)
+                size = os.path.getsize(dst_path)
+
+                if size <= 2000000:
+                    return dst_path
+
+                # If still too big, try lower quality first
+                if quality > 40:
+                    quality -= 10
+                else:
+                    # Then try smaller dimensions
+                    max_dim = int(max_dim * 0.8)
+                    quality = 70  # Reset quality for smaller dim
+                    if max_dim < 1000:
+                        break
+
+            return dst_path
     except Exception as e:
-        print(f"Error creating social image: {e}", flush=True)
+        print(f"Error creating social image (HEIC): {e}", flush=True)
         return ""
 
 
@@ -166,6 +186,29 @@ def create_full_image(src_path: str, base_dst_path: str) -> str:
         return ""
 
 
+PRODUCT_NAMES = {
+    "TCI": "True Color",
+    "RATIO": "Radar Ratio (VV/VH)",
+    "VV": "Radar VV",
+    "VH": "Radar VH",
+    "NIRFC": "False Color (NIR)",
+    "NDVI": "NDVI (Vegetation Index)",
+    "NDRE": "NDRE (Plant Stress)",
+    "NDBI": "NDBI (Urban/Built-up)",
+    "NBR": "NBR (Burn Index)",
+    "CAMO": "Camo Detection",
+    "AP": "Atmospheric Penetration (SWIR)",
+    "LIFE-MACHINE": "Life/Machine Separation",
+    "RADAR-BURN": "Radar Burn Detection",
+}
+
+
+def get_human_name(product_type: str) -> str:
+    """Converts a technical product type to a human-readable name."""
+    suffix = product_type.split("-")[-1].upper()
+    return PRODUCT_NAMES.get(suffix, suffix)
+
+
 def post_to_bsky(
     config: Dict[str, Any],
     roi_name: str,
@@ -174,7 +217,7 @@ def post_to_bsky(
     constellation: str,
     image_path: str,
 ) -> bool:
-    """Posts the ROI image to Bluesky."""
+    """Posts the ROI image to Bluesky with functional hashtags."""
     username = config.get("roi_bsky_username")
     password = config.get("roi_bsky_pw")
 
@@ -186,15 +229,35 @@ def post_to_bsky(
         client = Client()
         client.login(username, password)
 
-        # Simple product name: S2-TCI -> TCI
-        simple_prod = product_type.split("-")[-1]
+        human_prod = get_human_name(product_type)
 
-        post_text = (
-            f"Updated {simple_prod} image of {roi_name}\n"
-            f"Satellite: {constellation}\n"
-            f"Acquisition time: {acq_time}\n"
-            f"Made with material from Copernicus Sentinel"
-        )
+        # Build rich text with functional hashtags
+        tb = client_utils.TextBuilder()
+        tb.text(f"Updated {human_prod} image of {roi_name}\n")
+        tb.text(f"Satellite: {constellation}\n")
+        tb.text(f"Acquisition time: {acq_time}\n")
+        tb.text("Made with material from Copernicus Sentinel\n\n")
+
+        # Hashtag sequence: #OSINT, #satelliteimagery, #Sentinel, #<constellation>,
+        # Copernicus, #<ROI-name>
+        tb.tag("#OSINT", "OSINT")
+        tb.text(" ")
+        tb.tag("#satelliteimagery", "satelliteimagery")
+        tb.text(" ")
+        tb.tag("#Sentinel", "Sentinel")
+        tb.text(" ")
+
+        # constellation: remove spaces and hyphens
+        const_tag = constellation.replace(" ", "").replace("-", "")
+        tb.tag(f"#{const_tag}", const_tag)
+        tb.text(" ")
+
+        tb.tag("#Copernicus", "Copernicus")
+        tb.text(" ")
+
+        # ROI name: replace spaces with _
+        roi_tag = roi_name.replace(" ", "_")
+        tb.tag(f"#{roi_tag}", roi_tag)
 
         with open(image_path, "rb") as f:
             img_data = f.read()
@@ -208,13 +271,13 @@ def post_to_bsky(
         embed = Main(
             images=[
                 BskyImage(
-                    alt=f"{simple_prod} image of {roi_name} ({acq_time})",
+                    alt=f"{human_prod} image of {roi_name} ({acq_time})",
                     image=upload.blob,
                 )
             ]
         )
 
-        client.send_post(text=post_text, embed=embed)
+        client.send_post(text=tb, embed=embed)
         print(f"Successfully posted {roi_name} to Bluesky.", flush=True)
         return True
     except Exception as e:
@@ -225,6 +288,7 @@ def post_to_bsky(
 def run_roi_stage(process_all: bool = False) -> int:
     """
     Main entry point for the ROI stage.
+    Groups inventory by acquisition time and product type to handle multi-tile orbits.
     Scans the inventory and processes ROI crops and social posts.
     """
     func.perf_logger.start_step("ROI Cropping Stage")
@@ -249,39 +313,69 @@ def run_roi_stage(process_all: bool = False) -> int:
         func.perf_logger.end_step()
         return 0
 
-    # Filter for layers to process
-    layers_to_check = []
-    if process_all:
-        layers_to_check = inventory.get("layers", [])
-        print("Standalone Mode: Checking all inventory files.", flush=True)
-    else:
-        # Filter for "new" files rendered in this run
-        run_start_dt = datetime.fromtimestamp(
-            func.perf_logger.start_time, tz=timezone.utc
-        )
-        for layer in inventory.get("layers", []):
-            render_time_str = layer.get("render_time", "")
-            if not render_time_str:
-                continue
-            try:
-                render_dt = datetime.fromisoformat(
-                    render_time_str.replace("Z", "+00:00")
-                )
-                if render_dt >= run_start_dt:
-                    layers_to_check.append(layer)
-            except Exception:
-                continue
-        print(
-            f"Pipeline Mode: Checking {len(layers_to_check)} new products.", flush=True
-        )
+    all_layers = inventory.get("layers", [])
+    if not all_layers:
+        print("No products found in inventory.", flush=True)
+        func.perf_logger.end_step()
+        return 0
 
-    if not layers_to_check:
-        print("No products found for ROI processing.", flush=True)
+    # Group all layers by (Date, Orbit, Direction, Product)
+    # Filter out ROI crops themselves to avoid recursion
+    grouped_layers: Dict[
+        Tuple[str, Optional[str], Optional[str], str], List[Dict[str, Any]]
+    ] = {}
+    for layer in all_layers:
+        p_type = layer.get("product", "")
+        if p_type.startswith("ROI-"):
+            continue
+
+        acq_time = layer.get("acquisition_time", "Unknown")
+        # Extract date part for broader grouping if orbit info is available
+        # ISO: 2026-05-24T10:00:00Z -> 2026-05-24
+        date_part = acq_time[:10] if len(acq_time) >= 10 else acq_time
+
+        rel_orbit = layer.get("relative_orbit")
+        orbit_dir = layer.get("orbit_direction")
+
+        # If we don't have orbit info, we fallback to acq_time (original logic)
+        # but if we have it, we use the date + orbit + dir which is rock solid.
+        key = (date_part if rel_orbit else acq_time, rel_orbit, orbit_dir, p_type)
+        if key not in grouped_layers:
+            grouped_layers[key] = []
+        grouped_layers[key].append(layer)
+
+    # Identify groups to process
+    groups_to_process = []
+    run_start_dt = datetime.fromtimestamp(func.perf_logger.start_time, tz=timezone.utc)
+
+    for key, layers in grouped_layers.items():
+        if process_all:
+            groups_to_process.append((key, layers))
+        else:
+            is_dirty = False
+            for layer in layers:
+                render_time_str = layer.get("render_time", "")
+                if not render_time_str:
+                    continue
+                try:
+                    render_dt = datetime.fromisoformat(
+                        render_time_str.replace("Z", "+00:00")
+                    )
+                    if render_dt >= run_start_dt:
+                        is_dirty = True
+                        break
+                except Exception:
+                    continue
+            if is_dirty:
+                groups_to_process.append((key, layers))
+
+    if not groups_to_process:
+        print("No new products found for ROI processing.", flush=True)
         func.perf_logger.end_step()
         return 0
 
     print(
-        f"Checking {len(layers_to_check)} products against {len(rois)} ROIs.",
+        f"Checking {len(groups_to_process)} product groups against {len(rois)} ROIs.",
         flush=True,
     )
 
@@ -289,79 +383,92 @@ def run_roi_stage(process_all: bool = False) -> int:
     bsky_roi_names = config.get("roi_bsky_names", [])
 
     crops_created = 0
-    for layer in layers_to_check:
-        product_type = layer.get("product", "")
-        # SKIP existing ROI crops to avoid recursive cropping
-        if product_type.startswith("ROI-"):
-            continue
-
-        acq_time = layer.get("acquisition_time", "Unknown")
-        tif_rel_path = layer.get("path", "")
-        src_path = os.path.join(c.DIRS["OUT"], tif_rel_path)
+    for (date_part, rel_orbit, orbit_dir, product_type), layers in groups_to_process:
         constellation = "Sentinel-2" if product_type.startswith("S2") else "Sentinel-1"
-        resolution = layer.get("resolution")
 
-        if not os.path.exists(src_path):
+        # Use the earliest acquisition time in the group for the filename
+        # to keep it consistent.
+        base_acq_time = min(l.get("acquisition_time", "Unknown") for l in layers)
+        iso_clean = base_acq_time.replace(":", "")
+
+        # Aggregate metadata and paths for the group
+        src_paths = [
+            os.path.join(c.DIRS["OUT"], l["path"])
+            for l in layers
+            if os.path.exists(os.path.join(c.DIRS["OUT"], l["path"]))
+        ]
+        if not src_paths:
             continue
 
-        iso_clean = acq_time.replace(":", "")
+        # Cloud cover (average)
+        cc_vals = [l["cloud_cover"] for l in layers if l.get("cloud_cover") is not None]
+        avg_cloud_cover = sum(cc_vals) / len(cc_vals) if cc_vals else None
+
+        # Resolution (max)
+        resolution = max(l.get("resolution", 0) for l in layers)
 
         for roi in rois:
             roi_name_raw = roi.get("name", "ROI")
             # Resolve env vars but DON'T force lowercase
-            roi_name = func.resolve_env_variable(roi_name_raw)
-            # Replace _ with space
-            roi_name = roi_name.replace("_", " ")
+            roi_name = func.resolve_env_variable(roi_name_raw).replace("_", " ")
 
-            roi_bbox_raw = roi.get("bbox", "")
-            roi_bbox = func.resolve_env_variable(roi_bbox_raw)
+            roi_bbox = func.resolve_env_variable(roi.get("bbox", ""))
             roi_match_threshold = roi.get("bbox_match", 0)
             desired_products = roi.get("products", [])
 
             # Check if this product is desired by the ROI
             match_found = False
             for dp in desired_products:
-                if dp.upper() in product_type.upper():
+                dp_up = dp.upper()
+                pt_up = product_type.upper()
+                # Direct match (e.g., "TCI" in "S2-TCI")
+                if dp_up in pt_up:
+                    match_found = True
+                    break
+                # Flexible match for RATIO variants (e.g., config RATIOVVVH vs inventory RATIO)
+                dp_norm = dp_up.replace("RATIOVVVH", "RATIO")
+                pt_norm = pt_up.replace("RATIOVVVH", "RATIO")
+                if dp_norm in pt_norm:
                     match_found = True
                     break
 
             if not match_found:
                 continue
 
-            coverage = calculate_coverage(roi_bbox, layer)
+            coverage = calculate_coverage(roi_bbox, layers)
             if coverage >= roi_match_threshold:
-                # Use full product type (excluding sensor prefix) for better clarity
-                # e.g., S2-NDBI_CLEAN -> NDBI_CLEAN, FUSED-RADAR-BURN -> RADAR-BURN
-                p_suffix = product_type.split("-", 1)[1] if "-" in product_type else product_type
-                
+                # Use full product type (excluding sensor prefix)
+                p_suffix = (
+                    product_type.split("-", 1)[1]
+                    if "-" in product_type
+                    else product_type
+                )
+
                 dst_filename = f"{roi_name}_{p_suffix}_{iso_clean}.tif"
                 dst_path = os.path.join(c.DIRS["VIS_ROI"], dst_filename)
 
-                if not os.path.exists(dst_path):
-                    print(
-                        f"ROI Match: {roi_name} ({coverage:.1f}%) -> Cropping {dst_filename}",
-                        flush=True,
-                    )
-                    if not crop_product(src_path, dst_path, roi_bbox):
-                        continue
+                print(
+                    f"ROI Match: {roi_name} ({coverage:.1f}%) -> "
+                    f"Cropping {dst_filename} ({len(src_paths)} tiles)",
+                    flush=True,
+                )
+                if not crop_product(src_paths, dst_path, roi_bbox):
+                    continue
 
-                    # Generate sidecar for the new crop
-                    # Label it as ROI-Name-Prod for clear identification
-                    meta.generate_sidecar(
-                        dst_path,
-                        f"ROI-{roi_name}-{p_suffix}",
-                        product_type,  # Keep original legend
-                        effective_res=resolution,
-                        cloud_cover=layer.get("cloud_cover"),
-                    )
-                    crops_created += 1
+                # Generate sidecar for the new crop
+                meta.generate_sidecar(
+                    dst_path,
+                    f"ROI-{roi_name}-{p_suffix}",
+                    product_type,
+                    effective_res=resolution,
+                    cloud_cover=avg_cloud_cover,
+                )
+                crops_created += 1
 
                 # Apprise and Bluesky posting
                 apprise_url = roi.get("apprise_url", "")
-                social_needed = (
-                    bsky_post_enabled and roi_name_raw in bsky_roi_names
-                )
-                
+                social_needed = bsky_post_enabled and roi_name_raw in bsky_roi_names
+
                 social_base = os.path.join(
                     c.DIRS["VIS_ROI"],
                     f"{roi_name}_{p_suffix}_{iso_clean}_social",
@@ -371,9 +478,10 @@ def run_roi_stage(process_all: bool = False) -> int:
                 if apprise_url:
                     full_image = create_full_image(dst_path, social_base)
                     if full_image:
+                        human_prod = get_human_name(product_type)
                         msg = (
-                            f"New {p_suffix} image for ROI {roi_name}\n"
-                            f"Acquired: {acq_time}\n"
+                            f"New {human_prod} image for ROI {roi_name}\n"
+                            f"Acquired: {base_acq_time}\n"
                             f"Satellite: {constellation}"
                         )
                         notify.send_notification(
@@ -391,12 +499,12 @@ def run_roi_stage(process_all: bool = False) -> int:
                             config,
                             roi_name,
                             product_type,
-                            acq_time,
+                            base_acq_time,
                             constellation,
                             image_path,
                         )
 
-    print(f"ROI stage complete. {crops_created} crops created.", flush=True)
+    print(f"ROI stage complete. {crops_created} crops created/updated.", flush=True)
     if crops_created > 0:
         inventory_manager.rebuild_inventory()
 
