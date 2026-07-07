@@ -624,8 +624,9 @@ def run_cleanup(
         s3_days: Override days for Sentinel-3 products (None = use `days`).
         fusion_days: Override days for fusion products (None = use `days`).
         s2_versions: If set, keep at most this many S2 products per grid tile,
-                     discarding older ones regardless of age. Overrides day-based
-                     S2 cleanup when set.
+                     discarding older ones regardless of age. When combined with
+                     day-based cleanup (CLEANUP_S2_DAYS or fallback CLEANUP_DAYS),
+                     products are removed if they exceed EITHER constraint.
     """
     mode = "DRY-RUN" if dry_run else "LIVE (FORCE)"
 
@@ -642,7 +643,7 @@ def run_cleanup(
             flush=True,
         )
         s2_limit = (
-            f"{s2_versions}v"
+            f"{s2_versions}v+{s2_days if s2_days is not None else days}d"
             if s2_versions is not None
             else f"{s2_days if s2_days is not None else days}d"
         )
@@ -669,36 +670,31 @@ def run_cleanup(
                 )
             outdated_products_list.extend(sat_products)
 
-        # S2: version-based or day-based
+        # S2: combined version-based AND day-based (OR logic)
+        s2_products: List[Dict[str, Any]] = []
         if s2_versions is not None:
-            s2_products = find_s2_excess_versions(s2_versions)
-            if s2_products:
+            version_excess = find_s2_excess_versions(s2_versions)
+            s2_products.extend(version_excess)
+            if version_excess:
                 print(
-                    f"  Found {len(s2_products)} outdated S2 products "
-                    f"(tile limit: {s2_versions}).",
+                    f"  Found {len(version_excess)} S2 products exceeding "
+                    f"tile version limit ({s2_versions}).",
                     flush=True,
                 )
-        else:
-            s2_val = s2_days if s2_days is not None else days
-            s2_products = find_outdated_products(s2_val, prefix="S2")
-            if s2_products:
-                print(
-                    f"  Found {len(s2_products)} outdated S2 products "
-                    f"(>{s2_val} days).",
-                    flush=True,
-                )
-        outdated_products_list.extend(s2_products)
-
-        # Fusion: day-based by directory
-        f_days = fusion_days if fusion_days is not None else days
-        fusion_products = find_outdated_products(f_days, scan_dir="fused")
-        if fusion_products:
+        s2_val = s2_days if s2_days is not None else days
+        age_outdated = find_outdated_products(s2_val, prefix="S2")
+        if age_outdated:
             print(
-                f"  Found {len(fusion_products)} outdated FUSION products "
-                f"(>{f_days} days).",
+                f"  Found {len(age_outdated)} S2 products older than {s2_val} days.",
                 flush=True,
             )
-        outdated_products_list.extend(fusion_products)
+        # Union: deduplicate by json_path (a product may be both too old and excess)
+        seen: set[str] = set()
+        for prod in s2_products + age_outdated:
+            if prod["json_path"] not in seen:
+                seen.add(prod["json_path"])
+                outdated_products_list.append(prod)
+
     else:
         print(
             f"--- Starting cleanup ({mode}) for products older than {days} days ---",
