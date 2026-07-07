@@ -12,6 +12,8 @@ All notable changes since 01MAR2026.
 
 ### Changed
 - **S2 cleanup OR combination** (`cleanup.py`): `CLEANUP_S2_VERSIONS` no longer overrides day-based cleanup entirely. Both constraints are now applied as OR — a product is removed if it exceeds the per-tile version cap OR is older than the day limit. Results are deduplicated by product path.
+- **Standalone cleanup reads .env** (`cleanup.py`): `main()` now loads per-satellite overrides (`CLEANUP_S1_DAYS`, `CLEANUP_S2_DAYS`, `CLEANUP_S3_DAYS`, `CLEANUP_FUSION_DAYS`, `CLEANUP_S2_VERSIONS`) from the environment, giving standalone `python cleanup.py` the same behavior as the pipeline-triggered run.
+- **`--prune-outside-search` flag** (`cleanup.py`): Removes products whose footprint bounds fall outside all current search boxes defined in `.env` (`S1_BOX`, `S2_BOX`, `S3_BOX`). Uses the `bounds` field from each product's sidecar JSON (Leaflet latLngBounds format) and checks bbox intersection against the search areas. Products with no sidecar or unparseable bounds are conservatively kept.
 
 ## 2026-07-07 — Per-Satellite Cleanup TTL, --shutdown Flag, CLEANUP_RAW Rework & S2 Versions
 

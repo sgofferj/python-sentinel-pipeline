@@ -41,6 +41,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Actually perform the deletion (default is dry-run)",
     )
+    parser.add_argument(
+        "--prune-outside-search",
+        action="store_true",
+        help="Also remove products whose footprint falls outside all current search boxes (S1_BOX/S2_BOX/S3_BOX in .env)",
+    )
     return parser.parse_args()
 
 
@@ -128,6 +133,101 @@ def find_outdated_products(
                             "acq_time": acq_time,
                         }
                     )
+
+    return outdated
+
+
+def load_search_boxes() -> List[Tuple[float, float, float, float]]:
+    """Parses S1_BOX, S2_BOX, S3_BOX from env into (west, south, east, north) tuples.
+
+    Environment variables are already expanded by load_dotenv() via constants.py.
+    Multi-box values use semicolon separators (e.g. "BOX1;BOX2").
+    """
+    boxes: List[Tuple[float, float, float, float]] = []
+    for key in ("S1_BOX", "S2_BOX", "S3_BOX"):
+        raw = os.getenv(key)
+        if not raw:
+            continue
+        for part in raw.split(";"):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                coords = [float(x) for x in part.split(",")]
+                if len(coords) == 4:
+                    boxes.append(tuple(coords))  # type: ignore[arg-type]
+                else:
+                    print(
+                        f"  WARNING: Skipping malformed box '{part}' in {key} "
+                        f"(expected 4 coordinates, got {len(coords)}).",
+                        flush=True,
+                    )
+            except (ValueError, TypeError) as exc:
+                print(
+                    f"  WARNING: Skipping unparseable box '{part}' in {key}: {exc}.",
+                    flush=True,
+                )
+    return boxes
+
+
+def find_products_outside_search(
+    search_boxes: List[Tuple[float, float, float, float]],
+) -> List[Dict[str, Any]]:
+    """Returns products whose sidecar bounds don't intersect any search box.
+
+    Reads the 'bounds' field from each sidecar JSON (Leaflet latLngBounds format:
+    [[south, west], [north, east]]) and checks against the search-area boxes.
+    Products with no sidecar, no bounds, or unparseable bounds are kept
+    (conservative — don't delete uncertain items).
+    """
+    if not search_boxes:
+        print("  No search boxes defined. Skipping outside-search prune.", flush=True)
+        return []
+
+    visual_root = os.path.join(c.DIRS["OUT"], "visual")
+    if not os.path.exists(visual_root):
+        return []
+
+    outdated: List[Dict[str, Any]] = []
+    for root, _, files in os.walk(visual_root):
+        for file in files:
+            if not file.endswith(".json") or file == "inventory.json":
+                continue
+            json_path = os.path.join(root, file)
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                continue
+
+            bounds = meta.get("bounds")
+            if not bounds or not isinstance(bounds, list) or len(bounds) != 2:
+                continue
+
+            # Leaflet bounds: [[south, west], [north, east]]
+            try:
+                west = float(bounds[0][1])
+                south = float(bounds[0][0])
+                east = float(bounds[1][1])
+                north = float(bounds[1][0])
+            except (TypeError, IndexError, ValueError):
+                continue
+
+            # Check intersection with any search box
+            intersects = False
+            for sw, ss, se, sn in search_boxes:
+                if west < se and east > sw and south < sn and north > ss:
+                    intersects = True
+                    break
+
+            if not intersects:
+                base_name = file.replace(".json", "")
+                outdated.append(
+                    {
+                        "base_name": base_name,
+                        "json_path": json_path,
+                    }
+                )
 
     return outdated
 
@@ -591,20 +691,6 @@ def cleanup_temp_files(dry_run: bool = True) -> None:
     for name in STALE_TMP_PATTERNS:
         path = os.path.join(tmp_dir, name)
         if os.path.exists(path):
-            if dry_run:
-                print(f"  [DRY-RUN] Would remove {path}", flush=True)
-            else:
-                try:
-                    os.remove(path)
-                    total += 1
-                except OSError as e:
-                    print(f"  Error removing {path}: {e}", flush=True)
-
-    # 2. *.grid.tif GPU warp grids (anywhere under /tmp or output)
-    for root in [tmp_dir, c.DIRS["OUT"]]:
-        total += glob_remove(".grid.tif", root, dry_run)
-
-
 def run_cleanup(
     days: int = 30,
     dry_run: bool = True,
@@ -613,6 +699,7 @@ def run_cleanup(
     s3_days: Optional[int] = None,
     fusion_days: Optional[int] = None,
     s2_versions: Optional[int] = None,
+    prune_outside_search: bool = False,
 ) -> None:
     """External entry point for cleanup function.
 
@@ -627,6 +714,9 @@ def run_cleanup(
                      discarding older ones regardless of age. When combined with
                      day-based cleanup (CLEANUP_S2_DAYS or fallback CLEANUP_DAYS),
                      products are removed if they exceed EITHER constraint.
+        prune_outside_search: If True, also remove products whose footprint bounds
+                              fall outside all search boxes defined in .env
+                              (S1_BOX, S2_BOX, S3_BOX).
     """
     mode = "DRY-RUN" if dry_run else "LIVE (FORCE)"
 
@@ -704,6 +794,22 @@ def run_cleanup(
             print(f"--- ROI cleanup limit set to {roi_days} days ---", flush=True)
         outdated_products_list = find_outdated_products(days)
 
+    # Outside-search prune: union with existing outdated list
+    if prune_outside_search:
+        search_boxes = load_search_boxes()
+        outside = find_products_outside_search(search_boxes)
+        if outside:
+            n_before = len(outdated_products_list)
+            existing_paths = {p["json_path"] for p in outdated_products_list}
+            new_outside = [p for p in outside if p["json_path"] not in existing_paths]
+            outdated_products_list.extend(new_outside)
+            print(
+                f"  Found {len(new_outside)} products outside current search areas "
+                f"({len(outside)} total, {n_before} already marked).",
+                flush=True,
+            )
+
+
     if not outdated_products_list:
         print("No outdated products found.", flush=True)
     else:
@@ -734,7 +840,23 @@ def run_cleanup(
 def main() -> None:
     """Main entry point for cleanup script."""
     args = parse_args()
-    run_cleanup(args.days, not args.force)
+    # Load per-satellite overrides from .env (already loaded via constants.py)
+    s1_days: Optional[int] = int(v) if (v := os.getenv("CLEANUP_S1_DAYS")) else None
+    s2_days: Optional[int] = int(v) if (v := os.getenv("CLEANUP_S2_DAYS")) else None
+    s3_days: Optional[int] = int(v) if (v := os.getenv("CLEANUP_S3_DAYS")) else None
+    fusion_days: Optional[int] = (int(v) if (v := os.getenv("CLEANUP_FUSION_DAYS")) else None)
+    s2_versions: Optional[int] = (int(v) if (v := os.getenv("CLEANUP_S2_VERSIONS")) else None)
+
+    run_cleanup(
+        days=args.days,
+        dry_run=not args.force,
+        s1_days=s1_days,
+        s2_days=s2_days,
+        s3_days=s3_days,
+        fusion_days=fusion_days,
+        s2_versions=s2_versions,
+        prune_outside_search=args.prune_outside_search,
+    )
 
 
 if __name__ == "__main__":
