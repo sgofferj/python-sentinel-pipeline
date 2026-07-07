@@ -11,7 +11,7 @@
 
 """
 Satellite product search and logging module.
-Handles OData queries for Sentinel-1 and Sentinel-2 and maintains local search logs.
+Handles OData queries for Sentinel-1, Sentinel-2, and Sentinel-3 and maintains local search logs.
 """
 
 import json
@@ -97,11 +97,14 @@ def search_s1(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
         log = load_log("s1")
         if log:
             if not os.getenv("S1_STARTDATE"):
-                start_date = log.get("time", start_date)
+                # Apply a 24-hour look-back to account for cataloging delays
+                log_time = log.get("time", start_date)
+                start_date = func.offset_timestamp(log_time, hours=24)
             last_ids = [f["id"] for f in log.get("files", []) if "id" in f]
 
     print(
-        f"Searching S1 ({product_type}/{sensor_mode}) from {start_date}...", flush=True
+        f"Searching S1 ({product_type}/{sensor_mode}) from {start_date} (Watermark: {log.get('time') if 'log' in locals() and log else 'N/A'})...",
+        flush=True,
     )
 
     for box in boxes:
@@ -154,11 +157,13 @@ def search_s2(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
         log = load_log("s2")
         if log:
             if not os.getenv("S2_STARTDATE"):
-                start_date = log.get("time", start_date)
+                # Apply a 24-hour look-back to account for cataloging delays
+                log_time = log.get("time", start_date)
+                start_date = func.offset_timestamp(log_time, hours=24)
             last_ids = [f["id"] for f in log.get("files", []) if "id" in f]
 
     print(
-        f"Searching S2 ({product_type}, Cloud < {cloud_cover}%) from {start_date}...",
+        f"Searching S2 ({product_type}, Cloud < {cloud_cover}%) from {start_date} (Watermark: {log.get('time') if 'log' in locals() and log else 'N/A'})...",
         flush=True,
     )
 
@@ -188,6 +193,80 @@ def search_s2(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
 
     print(
         f"S2 search complete. Found {num_files} unique new products across {len(boxes)} areas.",
+        flush=True,
+    )
+    return num_files, search_result
+
+
+def search_s3(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
+    """Searches for Sentinel-3 products. Returns (num_files, results_per_box)."""
+    num_files: int = 0
+    search_result: Dict[str, List[Dict[str, Any]]] = {}
+    seen_ids = set()
+
+    product_type: str = os.getenv("S3_PRODUCTTYPE", "SL_1_RBT___")
+    sensor_mode: str = os.getenv("S3_SENSORMODE", "NT")
+    max_records: int = int(os.getenv("S3_MAXRECORDS", "5"))
+    sort_param: str = os.getenv("S3_SORTPARAM", "startDate")
+    sort_order: str = os.getenv("S3_SORTORDER", "descending")
+
+    start_date: str = os.getenv("S3_STARTDATE", func.yesterday())
+    last_ids: List[str] = []
+
+    if USE_LOG:
+        log = load_log("s3")
+        if log:
+            if not os.getenv("S3_STARTDATE"):
+                log_time = log.get("time", start_date)
+                start_date = func.offset_timestamp(log_time, hours=48)
+            last_ids = [f["id"] for f in log.get("files", []) if "id" in f]
+
+    # CDSE returns mixed product types — RBT is only ~15% of results, so fetch a
+    # generous sample to reliably get max_records RBT products after filtering
+    fetch_limit = max(100, max_records * 10)
+
+    mode_filter = sensor_mode.upper()
+    print(
+        f"Searching S3 ({product_type}/{sensor_mode}) from {start_date} (fetch_limit={fetch_limit})...",
+        flush=True,
+    )
+
+    for box in boxes:
+        # S3 OData doesn't support productType/sensorMode as attribute filters
+        # Filter by filename pattern instead
+        status, result = mycop.productSearch(
+            "Sentinel3",
+            startDate=start_date,
+            box=box,
+            maxRecords=fetch_limit,
+            sortParam=sort_param,
+            sortOrder=sort_order,
+        )
+        if status == 200:
+            box_files: List[Dict[str, Any]] = []
+            for feat in result["features"]:
+                title = feat.get("properties", {}).get("title", "")
+                # Filter by product type in filename
+                if product_type not in title:
+                    continue
+                # Filter by sensor mode: _NR_ = NRT, _NT_ = NTC
+                if mode_filter == "NRT" and "_NR_" not in title:
+                    continue
+                if mode_filter == "NT" and "_NT_" not in title:
+                    continue
+                if file_id := feat.get("id"):
+                    if file_id in seen_ids:
+                        continue
+                    if USE_LOG and file_id in last_ids:
+                        continue
+                    box_files.append(feat)
+                    seen_ids.add(file_id)
+                    num_files += 1
+            # Trim to the most recent max_records products per box
+            search_result[box] = box_files[:max_records]
+
+    print(
+        f"S3 search complete. Found {num_files} unique new products across {len(boxes)} areas.",
         flush=True,
     )
     return num_files, search_result

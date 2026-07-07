@@ -122,8 +122,15 @@ def reproject_with_cuda(
             dst_srs = osr.SpatialReference()
             dst_srs.SetFromUserInput(dst_crs)
 
-            vrt = gdal.AutoCreateWarpedVRT(
-                src_ds, None, dst_srs.ExportToWkt(), gdal.GRA_Bilinear
+            # Use gdal.Warp to create a VRT with TPS support
+            # This is critical for Sentinel-1 GCP-based georeferencing
+            vrt = gdal.Warp(
+                "",
+                src_ds,
+                format="VRT",
+                tps=True,
+                dstSRS=dst_crs,
+                resampleAlg=gdal.GRA_Bilinear,
             )
             dst_w, dst_h = vrt.RasterXSize, vrt.RasterYSize
             v_geo = vrt.GetGeoTransform()

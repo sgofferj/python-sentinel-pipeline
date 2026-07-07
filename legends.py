@@ -183,6 +183,42 @@ def get_s2_composite_legend(name, r_desc, g_desc, b_desc, extra_info=None):
     """
 
 
+def get_s3_bt_legend():
+    """Returns HTML for S3 Brightness Temperature composite legend with colorbar."""
+    return """
+    <div class="legend-box" style="padding: 10px; background: rgba(0,0,0,0.8); color: white; border-radius: 5px; font-family: monospace; font-size: 12px;">
+        <div style="font-weight: bold; margin-bottom: 5px; color: #ffeb3b;">S3 BT (Brightness Temperature)</div>
+        <div style="height: 16px; width: 200px; background: linear-gradient(to right, #000, #001a4d, #0033cc, #6699ff, #fff, #ffddcc, #ff9933, #cc4400, #881100); border: 1px solid #444;"></div>
+        <div style="display: flex; justify-content: space-between; width: 200px; margin-top: 2px;">
+            <span>250K</span>
+            <span>300K</span>
+            <span>350K</span>
+        </div>
+        <div style="margin-top: 5px; font-size: 10px; color: #aaa;">
+            Mean S7/S8/S9 BT. Cold = dark/blue, moderate = white, hot = orange/red.
+        </div>
+    </div>
+    """
+
+
+def get_s3_fire_legend():
+    """Returns HTML for S3 Fire Detection legend with colorbar."""
+    return """
+    <div class="legend-box" style="padding: 10px; background: rgba(0,0,0,0.8); color: white; border-radius: 5px; font-family: monospace; font-size: 12px;">
+        <div style="font-weight: bold; margin-bottom: 5px; color: #ffeb3b;">S3 FIRE (Thermal Anomaly)</div>
+        <div style="height: 16px; width: 200px; background: linear-gradient(to right, rgba(0,0,0,0), #500, #c00, #ff4400, #ffaa00, #ffee00, #ffffff); border: 1px solid #444;"></div>
+        <div style="display: flex; justify-content: space-between; width: 200px; margin-top: 2px;">
+            <span>300K</span>
+            <span>340K</span>
+            <span>380K+</span>
+        </div>
+        <div style="margin-top: 5px; font-size: 10px; color: #aaa;">
+            S7 (3.74 µm) hot-body detection. Cold backgrounds are transparent.
+        </div>
+    </div>
+    """
+
+
 def get_ais_legend(base_legend_html, product_name):
     """Wraps an existing legend with an AIS overlay indicator."""
     ais_part = """
@@ -253,6 +289,9 @@ def save_all_legends(output_dir):
             "NIR",
             extra_info="Pierces smoke/haze. Red=Active fires/Scarring, Green=Healthy Veg, Blue=Water/Urban.",
         ),
+        # S3 Fire Detection
+        "S3-BT": get_s3_bt_legend(),
+        "S3-FIRE": get_s3_fire_legend(),
         "S2-CAMO": get_s2_composite_legend(
             "CAMO",
             "NDVI",

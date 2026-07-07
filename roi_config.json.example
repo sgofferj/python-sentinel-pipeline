@@ -1,0 +1,32 @@
+{
+  "config": {
+    "roi_bsky_username": "your-handle.bsky.social",
+    "roi_bsky_pw": "your-app-password",
+    "roi_bsky_post": false,
+    "roi_bsky_names": [
+      "My_ROI_Name"
+    ]
+  },
+  "rois": [
+    {
+      "name": "My_ROI_Name",
+      "bbox": "24.8,60.1,25.1,60.3",
+      "bbox_match": 90,
+      "products": [
+        "TCI",
+        "RATIO",
+        "NDVI"
+      ],
+      "apprise_url": "pover://user@token"
+    },
+    {
+      "name": "ENV_BACKED_ROI",
+      "bbox": "${ROI_BBOX_VAR}",
+      "bbox_match": 50,
+      "products": [
+        "RATIO",
+        "RADAR-BURN"
+      ]
+    }
+  ]
+}

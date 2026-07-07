@@ -113,12 +113,13 @@ body.sidebar-collapsed .sidebar-toggle-btn svg {
 
 .action-row {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     margin-top: 10px;
 }
 
 .deselect-btn, .action-btn, .toggle-btn {
-    flex: 1;
+    flex: 1 1 85px;
     background: transparent;
     border: 1px solid #ffeb3b;
     color: #ffeb3b;
@@ -269,6 +270,40 @@ body.sidebar-collapsed .sidebar-toggle-btn svg {
     color: #fff;
     border-color: #ffeb3b;
     background: #3d3d3d;
+}
+
+.orbit-row {
+    display: flex;
+    gap: 4px;
+    margin: 2px 10px 10px 15px;
+}
+
+.sat-group.collapsed .orbit-row {
+    display: none;
+}
+
+.orbit-btn {
+    width: 28px;
+    height: 24px;
+    background: #333;
+    border: 1px solid #444;
+    color: #666;
+    cursor: pointer;
+    border-radius: 3px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    line-height: 1;
+    transition: all 0.2s;
+}
+
+.orbit-btn:hover {
+    background: #444;
+}
+
+.orbit-btn.active {
+    color: #fff;
+    border-color: #4fc3f7;
+    background: #2a3a4a;
 }
 
 .grid-group {
@@ -699,4 +734,64 @@ body.sidebar-collapsed .sidebar-toggle-btn svg {
 }
 ::-webkit-scrollbar-thumb:hover {
     background: #555;
+}
+
+/* Opacity Sliders */
+#fire-opacity-area input[type="range"],
+#radar-opacity-area input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    background: #444;
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+}
+#fire-opacity-area input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #ff4444;
+    border: 2px solid #ffeb3b;
+    cursor: pointer;
+}
+#fire-opacity-area input[type="range"]::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #ff4444;
+    border: 2px solid #ffeb3b;
+    cursor: pointer;
+}
+#radar-opacity-area input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #4fc3f7;
+    border: 2px solid #0288d1;
+    cursor: pointer;
+}
+#radar-opacity-area input[type="range"]::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #4fc3f7;
+    border: 2px solid #0288d1;
+    cursor: pointer;
+}
+#fire-opacity-value {
+    color: #ffeb3b;
+    font-family: monospace;
+    font-size: 11px;
+    font-weight: bold;
+}
+#radar-opacity-value {
+    color: #4fc3f7;
+    font-family: monospace;
+    font-size: 11px;
+    font-weight: bold;
 }

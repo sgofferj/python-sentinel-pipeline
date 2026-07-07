@@ -267,6 +267,14 @@ def fuse_radar_optical(
 
             out_path = os.path.join(c.DIRS["VIS_FUSED"], f"{out_name}-RADAR-BURN.tif")
             with rio.open(out_path, "w", **profile) as dst:
+                # Propagate orbit metadata from S2
+                rel_orbit = s2_src.tags().get("RELATIVE_ORBIT_NUMBER")
+                orb_dir = s2_src.tags().get("PASS_DIRECTION")
+                if rel_orbit:
+                    dst.update_tags(RELATIVE_ORBIT_NUMBER=rel_orbit)
+                if orb_dir:
+                    dst.update_tags(PASS_DIRECTION=orb_dir)
+
                 # Map S2 window to S1 space
                 win_bounds = s2_src.window_bounds(s2_win)
                 s1_win = s1_src.window(*win_bounds)  # pylint: disable=unused-variable
@@ -328,7 +336,12 @@ def fuse_radar_optical(
         func.perf_logger.end_step()
         build_overviews_gdal(out_path)
         meta.generate_sidecar(
-            out_path, "FUSED-RADAR-BURN", "RADAR-BURN", effective_res=10.0
+            out_path,
+            "FUSED-RADAR-BURN",
+            "RADAR-BURN",
+            effective_res=10.0,
+            relative_orbit=rel_orbit,
+            orbit_direction=orb_dir,
         )
         cog.convert_to_cog(out_path)
         return True
@@ -397,6 +410,14 @@ def fuse_target_probe_v2(
                 c.DIRS["VIS_FUSED"], f"{out_name}-TARGET-PROBE-V2.tif"
             )
             with rio.open(out_path, "w", **profile) as dst:
+                # Propagate orbit metadata from S2
+                rel_orbit = tci_src.tags().get("RELATIVE_ORBIT_NUMBER")
+                orb_dir = tci_src.tags().get("PASS_DIRECTION")
+                if rel_orbit:
+                    dst.update_tags(RELATIVE_ORBIT_NUMBER=rel_orbit)
+                if orb_dir:
+                    dst.update_tags(PASS_DIRECTION=orb_dir)
+
                 for _, window in dst.block_windows(1):
                     dst_bounds = dst.window_bounds(window)
                     tci_data = tci_src.read(
@@ -469,7 +490,12 @@ def fuse_target_probe_v2(
             func.perf_logger.end_step()
             build_overviews_gdal(out_path)
             meta.generate_sidecar(
-                out_path, "FUSED-TARGET-PROBE-V2", "TARGET-PROBE-V2", effective_res=10.0
+                out_path,
+                "FUSED-TARGET-PROBE-V2",
+                "TARGET-PROBE-V2",
+                effective_res=10.0,
+                relative_orbit=rel_orbit,
+                orbit_direction=orb_dir,
             )
             cog.convert_to_cog(out_path)
             return True
@@ -531,6 +557,14 @@ def fuse_life_machine(
 
             out_path = os.path.join(c.DIRS["VIS_FUSED"], f"{out_name}-LIFE-MACHINE.tif")
             with rio.open(out_path, "w", **profile) as dst:
+                # Propagate orbit metadata from S2
+                rel_orbit = tci_src.tags().get("RELATIVE_ORBIT_NUMBER")
+                orb_dir = tci_src.tags().get("PASS_DIRECTION")
+                if rel_orbit:
+                    dst.update_tags(RELATIVE_ORBIT_NUMBER=rel_orbit)
+                if orb_dir:
+                    dst.update_tags(PASS_DIRECTION=orb_dir)
+
                 for _, window in dst.block_windows(1):
                     dst_bounds = dst.window_bounds(window)
                     nir = nirfc_src.read(
@@ -617,7 +651,12 @@ def fuse_life_machine(
             func.perf_logger.end_step()
             build_overviews_gdal(out_path)
             meta.generate_sidecar(
-                out_path, "FUSED-LIFE-MACHINE", "LIFE-MACHINE", effective_res=10.0
+                out_path,
+                "FUSED-LIFE-MACHINE",
+                "LIFE-MACHINE",
+                effective_res=10.0,
+                relative_orbit=rel_orbit,
+                orbit_direction=orb_dir,
             )
             cog.convert_to_cog(out_path)
             return True

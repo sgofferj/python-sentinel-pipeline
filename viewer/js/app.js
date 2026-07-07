@@ -44,12 +44,19 @@ function translateUI() {
 }
 
 // --- LAYER ORDERING (Z-Indices) ---
+// Stacking order (bottom to top):
+//   Main products & ROIs: time-of-flight (newer on top)
+//   Identify Tiles (optical/radar grids)
+//   Prediction GeoJSONs (overpass layers)
+//   User GeoJSONs (config overlays)
 const Z_INDEX_IDENTIFY = 100000000;
 const Z_INDEX_HIGHLIGHT = 110000000;
+const Z_INDEX_PREDICTIONS = 150000000;
 const Z_INDEX_OVERLAYS = 200000000;
 
 const S2_PRIORITY = ["TCI", "TCI-AIS", "NIRFC", "AP", "NDBI_CLEAN", "NDBI", "NDRE", "NDVI", "NBR", "CAMO"];
 const S1_PRIORITY = ["VV", "VH", "RATIO", "RATIO-AIS"];
+const S3_PRIORITY = ["FIRE", "BT"];
 
 // --- HELPERS ---
 function formatSize(bytes) {
@@ -77,8 +84,12 @@ let highlightSource;
 let inventoryData = [];
 let s2SortMode = 'product'; // 'product' or 'grid'
 let roiSortMode = 'product'; // 'product' or 'roi'
+let orbitFilter = { S1: 'all', S2: 'all', S3: 'all', FUSED: 'all', ROI: 'all' };
 let identifyOpticalLayer;
 let identifyRadarLayer;
+let overpassS1Layer;
+let overpassS2Layer;
+let overpassS3Layer;
 let masterLegends = {}; 
 let sentinelAttribution = new ol.source.Vector({ attributions: '' });
 
@@ -94,10 +105,16 @@ function saveSettings() {
         activeLayerPaths: Object.keys(activeLayers).filter(path => activeLayers[path].layer.getVisible()),
         s2SortMode: s2SortMode,
         roiSortMode: roiSortMode,
+        orbitFilter: orbitFilter,
         expandedGroups: Array.from(document.querySelectorAll('.sat-group:not(.collapsed), .grid-group:not(.collapsed), .prod-group:not(.collapsed)'))
             .map(el => el.id).filter(id => !!id),
         identifyOptical: !!identifyOpticalLayer,
         identifyRadar: !!identifyRadarLayer,
+        overpassS1: !!overpassS1Layer,
+        overpassS2: !!overpassS2Layer,
+        overpassS3: !!overpassS3Layer,
+        fireOpacity: parseInt(document.getElementById('fire-opacity-slider').value) / 100,
+        radarOpacity: parseInt(document.getElementById('radar-opacity-slider').value) / 100,
         baseLayer: Object.keys(baseLayers).find(key => baseLayers[key].getVisible()) || 'dark',
         sidebarCollapsed: document.body.classList.contains('sidebar-collapsed')
     };
@@ -150,8 +167,35 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('zoom-available').onclick = zoomToAvailable;
     document.getElementById('identify-optical').onclick = toggleIdentifyOptical;
     document.getElementById('identify-radar').onclick = toggleIdentifyRadar;
+    document.getElementById('overpass-s1').onclick = toggleOverpassS1;
+    document.getElementById('overpass-s2').onclick = toggleOverpassS2;
+    document.getElementById('overpass-s3').onclick = toggleOverpassS3;
     document.getElementById('toggle-fullscreen').onclick = toggleFullscreen;
     document.getElementById('map-screenshot').onclick = takeScreenshot;
+    document.getElementById('fire-opacity-slider').oninput = function() {
+        const val = this.value / 100;
+        document.getElementById('fire-opacity-value').innerText = Math.round(val * 100) + '%';
+        Object.keys(activeLayers).forEach(path => {
+            const o = activeLayers[path];
+            if (o.meta.legend_id && o.meta.legend_id.startsWith('S3-FIRE')) {
+                o.layer.setOpacity(val);
+            }
+        });
+        saveSettings();
+    };
+
+    document.getElementById('radar-opacity-slider').oninput = function() {
+        const val = this.value / 100;
+        document.getElementById('radar-opacity-value').innerText = Math.round(val * 100) + '%';
+        Object.keys(activeLayers).forEach(path => {
+            const o = activeLayers[path];
+            if (o.meta.legend_id && o.meta.legend_id.startsWith('S1-') && !o.meta.legend_id.startsWith('S1-AIS')) {
+                o.layer.setOpacity(val);
+            }
+        });
+        saveSettings();
+    };
+
     document.getElementById('sidebar-toggle').onclick = () => {
         document.body.classList.toggle('sidebar-collapsed');
         saveSettings();
@@ -177,13 +221,6 @@ function updateAcquisitionRange(layers) {
         const t = UI_TRANSLATIONS[currentLang];
         rangeEl.innerText = `${t.acq_range}: (${times[0]} - ${times[times.length - 1]})`;
     }
-}
-
-function updateNextOverflight(overflights) {
-    const nextEl = document.getElementById('next-overflight');
-    if (!nextEl || !overflights || !Array.isArray(overflights)) return;
-    const t = UI_TRANSLATIONS[currentLang];
-    nextEl.innerHTML = overflights.map(p => `${t.next} ${p.label}: ${p.time}`).join("<br>");
 }
 
 function updateGroupMarkers() {
@@ -375,6 +412,7 @@ async function loadInventory() {
     const saved = loadSettings();
     if (saved && saved.s2SortMode) s2SortMode = saved.s2SortMode;
     if (saved && saved.roiSortMode) roiSortMode = saved.roiSortMode;
+    if (saved && saved.orbitFilter) orbitFilter = saved.orbitFilter;
 
     try {
         const response = await fetch(INVENTORY_URL);
@@ -384,7 +422,6 @@ async function loadInventory() {
         if (data.layers && data.layers.length > 0) {
             inventoryData = data.layers;
             updateAcquisitionRange(data.layers);
-            updateNextOverflight(data.next_overflights);
             renderLayerPicker(data.layers);
             
             if (saved && saved.activeLayerPaths) {
@@ -400,10 +437,22 @@ async function loadInventory() {
             if (saved) {
                 if (saved.identifyOptical) toggleIdentifyOptical();
                 if (saved.identifyRadar) toggleIdentifyRadar();
+                if (saved.overpassS1) toggleOverpassS1();
+                if (saved.overpassS2) toggleOverpassS2();
+                if (saved.overpassS3) toggleOverpassS3();
+                if (saved.fireOpacity != null) {
+                    const pct = Math.round(saved.fireOpacity * 100);
+                    document.getElementById('fire-opacity-slider').value = pct;
+                    document.getElementById('fire-opacity-value').innerText = pct + '%';
+                }
+                if (saved.radarOpacity != null) {
+                    const pct = Math.round(saved.radarOpacity * 100);
+                    document.getElementById('radar-opacity-slider').value = pct;
+                    document.getElementById('radar-opacity-value').innerText = pct + '%';
+                }
             }
         } else {
             picker.innerHTML = `<div id="loading">${t.no_images}</div>`;
-            if (data.next_overflights) updateNextOverflight(data.next_overflights);
         }
     } catch (e) { picker.innerHTML = `<div id="loading">${t.error_loading}</div>`; }
 }
@@ -665,6 +714,102 @@ function toggleIdentifyRadar() {
     map.addLayer(identifyRadarLayer); btn.classList.add('active'); saveSettings();
 }
 
+function toggleOverpassS1() {
+    const btn = document.getElementById('overpass-s1');
+    if (overpassS1Layer) {
+        map.removeLayer(overpassS1Layer);
+        overpassS1Layer = null;
+        btn.classList.remove('active');
+        saveSettings();
+        return;
+    }
+    const url = IMAGE_BASE_URL + 'visual/overpass_s1.geojson';
+    overpassS1Layer = new ol.layer.Vector({
+        source: new ol.source.Vector({ url: url, format: new ol.format.GeoJSON() }),
+        zIndex: Z_INDEX_PREDICTIONS,
+        style: (f) => {
+            const ts = f.get('timestamp');
+            return new ol.style.Style({
+                stroke: new ol.style.Stroke({ color: '#ffeb3b', width: 2 }),
+                fill: new ol.style.Fill({ color: 'rgba(255, 235, 59, 0.08)' }),
+                text: ts ? new ol.style.Text({
+                    text: ts, font: '11px monospace',
+                    fill: new ol.style.Fill({ color: '#ffeb3b' }),
+                    stroke: new ol.style.Stroke({ color: '#000', width: 3 }),
+                    overflow: true
+                }) : undefined
+            });
+        }
+    });
+    map.addLayer(overpassS1Layer);
+    btn.classList.add('active');
+    saveSettings();
+}
+
+function toggleOverpassS2() {
+    const btn = document.getElementById('overpass-s2');
+    if (overpassS2Layer) {
+        map.removeLayer(overpassS2Layer);
+        overpassS2Layer = null;
+        btn.classList.remove('active');
+        saveSettings();
+        return;
+    }
+    const url = IMAGE_BASE_URL + 'visual/overpass_s2.geojson';
+    overpassS2Layer = new ol.layer.Vector({
+        source: new ol.source.Vector({ url: url, format: new ol.format.GeoJSON() }),
+        zIndex: Z_INDEX_PREDICTIONS + 1,
+        style: (f) => {
+            const ts = f.get('timestamp');
+            return new ol.style.Style({
+                stroke: new ol.style.Stroke({ color: '#00bcd4', width: 2 }),
+                fill: new ol.style.Fill({ color: 'rgba(0, 188, 212, 0.08)' }),
+                text: ts ? new ol.style.Text({
+                    text: ts, font: '11px monospace',
+                    fill: new ol.style.Fill({ color: '#00bcd4' }),
+                    stroke: new ol.style.Stroke({ color: '#000', width: 3 }),
+                    overflow: true
+                }) : undefined
+            });
+        }
+    });
+    map.addLayer(overpassS2Layer);
+    btn.classList.add('active');
+    saveSettings();
+}
+
+function toggleOverpassS3() {
+    const btn = document.getElementById('overpass-s3');
+    if (overpassS3Layer) {
+        map.removeLayer(overpassS3Layer);
+        overpassS3Layer = null;
+        btn.classList.remove('active');
+        saveSettings();
+        return;
+    }
+    const url = IMAGE_BASE_URL + 'visual/overpass_s3.geojson';
+    overpassS3Layer = new ol.layer.Vector({
+        source: new ol.source.Vector({ url: url, format: new ol.format.GeoJSON() }),
+        zIndex: Z_INDEX_PREDICTIONS + 2,
+        style: (f) => {
+            const ts = f.get('timestamp');
+            return new ol.style.Style({
+                stroke: new ol.style.Stroke({ color: '#ff4444', width: 2 }),
+                fill: new ol.style.Fill({ color: 'rgba(255, 68, 68, 0.08)' }),
+                text: ts ? new ol.style.Text({
+                    text: ts, font: '11px monospace',
+                    fill: new ol.style.Fill({ color: '#ff4444' }),
+                    stroke: new ol.style.Stroke({ color: '#000', width: 3 }),
+                    overflow: true
+                }) : undefined
+            });
+        }
+    });
+    map.addLayer(overpassS3Layer);
+    btn.classList.add('active');
+    saveSettings();
+}
+
 function getGridSquare(l) {
     if (!l.product.startsWith("S2")) return "";
     const fn = l.path.split('/').pop();
@@ -689,6 +834,17 @@ function setRoiSortMode(mode) {
     roiSortMode = mode; saveSettings(); renderLayerPicker(inventoryData);
 }
 
+function setOrbitFilter(sat, mode) {
+    if (orbitFilter[sat] === mode) return;
+    orbitFilter[sat] = mode; saveSettings(); renderLayerPicker(inventoryData);
+}
+
+function matchesOrbitFilter(l, sat) {
+    const filter = orbitFilter[sat] || 'all';
+    if (filter === 'all') return true;
+    return (l.orbit_direction || '').toUpperCase() === filter;
+}
+
 function renderLayerPicker(layers) {
     const picker = document.getElementById('layer-picker');
     const pt = PRODUCT_TRANSLATIONS[currentLang];
@@ -696,7 +852,7 @@ function renderLayerPicker(layers) {
     const expandedIds = new Set(saved ? saved.expandedGroups : []);
     
     if (!saved) {
-        ['S2', 'S1', 'FUSED', 'ROI'].forEach(sat => {
+        ['S2', 'S1', 'S3', 'FUSED', 'ROI'].forEach(sat => {
             const old = document.getElementById(`group-${sat}`);
             if (old && !old.classList.contains('collapsed')) expandedIds.add(`group-${sat}`);
         });
@@ -730,19 +886,21 @@ function renderLayerPicker(layers) {
         groups[sat][type].push(l);
     });
 
-    ['S2', 'S1', 'FUSED', 'ROI'].forEach(sat => {
+    ['S2', 'S1', 'S3', 'FUSED', 'ROI'].forEach(sat => {
         if (!groups[sat]) return;
         const satMeta = pt[sat] || { title: sat, subtitle: "" };
         const satDiv = document.createElement('div');
         satDiv.className = 'sat-group' + (expandedIds.has(`group-${sat}`) ? '' : ' collapsed');
         satDiv.id = `group-${sat}`;
         
+        const f = orbitFilter[sat] || 'all';
         let sortRow = '';
         if (sat === 'S2') {
             sortRow = `<div class="sort-row"><button class="sort-btn ${s2SortMode === 'product' ? 'active' : ''}" onclick="event.stopPropagation(); setS2SortMode('product')">${UI_TRANSLATIONS[currentLang].by_product}</button><button class="sort-btn ${s2SortMode === 'grid' ? 'active' : ''}" onclick="event.stopPropagation(); setS2SortMode('grid')">${UI_TRANSLATIONS[currentLang].by_grid}</button></div>`;
         } else if (sat === 'ROI') {
             sortRow = `<div class="sort-row"><button class="sort-btn ${roiSortMode === 'product' ? 'active' : ''}" onclick="event.stopPropagation(); setRoiSortMode('product')">${UI_TRANSLATIONS[currentLang].by_product}</button><button class="sort-btn ${roiSortMode === 'roi' ? 'active' : ''}" onclick="event.stopPropagation(); setRoiSortMode('roi')">${UI_TRANSLATIONS[currentLang].by_roi}</button></div>`;
         }
+        sortRow += `<div class="orbit-row"><button class="orbit-btn ${f === 'all' ? 'active' : ''}" onclick="event.stopPropagation(); setOrbitFilter('${sat}', 'all')" title="All">A</button><button class="orbit-btn ${f === 'ASCENDING' ? 'active' : ''}" onclick="event.stopPropagation(); setOrbitFilter('${sat}', 'ASCENDING')" title="Ascending">&uarr;</button><button class="orbit-btn ${f === 'DESCENDING' ? 'active' : ''}" onclick="event.stopPropagation(); setOrbitFilter('${sat}', 'DESCENDING')" title="Descending">&darr;</button></div>`;
 
         satDiv.innerHTML = `
             <div class="sat-title" onclick="this.parentElement.classList.toggle('collapsed'); saveSettings();">
@@ -783,7 +941,7 @@ function renderLayerPicker(layers) {
                     typeDiv.id = tid;
                     typeDiv.innerHTML = `<div class="prod-title" onclick="this.parentElement.classList.toggle('collapsed'); saveSettings();">${pt[type] ? pt[type].title : type}</div><div class="layer-container"></div>`;
                     const lc = typeDiv.querySelector('.layer-container');
-                    gridGroups[grid][type].sort((a,b) => b.acquisition_time.localeCompare(a.acquisition_time)).forEach(l => lc.appendChild(createLayerItem(l)));
+                    gridGroups[grid][type].sort((a,b) => b.acquisition_time.localeCompare(a.acquisition_time)).filter(l => matchesOrbitFilter(l, sat)).forEach(l => lc.appendChild(createLayerItem(l)));
                     gpc.appendChild(typeDiv);
                 });
                 prodContainer.appendChild(gridDiv);
@@ -818,14 +976,16 @@ function renderLayerPicker(layers) {
                     typeDiv.id = tid;
                     typeDiv.innerHTML = `<div class="prod-title" onclick="this.parentElement.classList.toggle('collapsed'); saveSettings();">${pt[type] ? pt[type].title : type}</div><div class="layer-container"></div>`;
                     const lc = typeDiv.querySelector('.layer-container');
-                    gridGroups[roiName][type].sort((a,b) => b.acquisition_time.localeCompare(a.acquisition_time)).forEach(l => lc.appendChild(createLayerItem(l)));
+                    gridGroups[roiName][type].sort((a,b) => b.acquisition_time.localeCompare(a.acquisition_time)).filter(l => matchesOrbitFilter(l, sat)).forEach(l => lc.appendChild(createLayerItem(l)));
                     gpc.appendChild(typeDiv);
                 });
                 prodContainer.appendChild(gridDiv);
             });
         } else {
             Object.keys(groups[sat]).sort((a,b) => {
-                const prio = sat === 'S2' ? S2_PRIORITY : S1_PRIORITY;
+                let prio = S2_PRIORITY;
+                if (sat === 'S1') prio = S1_PRIORITY;
+                if (sat === 'S3') prio = S3_PRIORITY;
                 const idxA = prio.indexOf(a), idxB = prio.indexOf(b);
                 if (idxA !== -1 && idxB !== -1) return idxA - idxB;
                 if (idxA !== -1) return -1; if (idxB !== -1) return 1;
@@ -843,7 +1003,7 @@ function renderLayerPicker(layers) {
                         return getGridSquare(a).localeCompare(getGridSquare(b));
                     }
                     return timeComp;
-                }).forEach(l => lc.appendChild(createLayerItem(l)));
+                }).filter(l => matchesOrbitFilter(l, sat)).forEach(l => lc.appendChild(createLayerItem(l)));
                 prodContainer.appendChild(typeDiv);
             });
         }
@@ -868,9 +1028,23 @@ function createLayerItem(l) {
     const friendlyTime = (new Date(l.acquisition_time)).toLocaleString(currentLang === 'fi' ? 'fi-FI' : (currentLang === 'sv' ? 'sv-SE' : (currentLang === 'de' ? 'de-DE' : 'en-GB')), { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) + "Z";
     const safeId = `chk-${l.path.replace(/[^a-zA-Z0-9]/g, '_')}`;
     
-    let label = (grid ? grid + ", " : "") + (roiName ? roiName + ", " : "") + friendlyTime;
+    // Label starts with date/time
+    let label = friendlyTime;
+    if (grid) label += ` • ${grid}`;
+    if (roiName) label += ` • ${roiName}`;
+
+    // Info line (layer-status) reformatting
+    const datePart = l.acquisition_time.split("T")[0];
+    const sv = l.satellite ? l.satellite.substring(1) : "";
+    let info = datePart;
+    if (sv) info += ` • ${sv}`;
+    if (l.cloud_cover != null) info += ` • ☁️ ${l.cloud_cover}%`;
+    if (l.orbit_direction) {
+        const arrow = l.orbit_direction.toUpperCase() === 'ASCENDING' ? '↑' : '↓';
+        info += ` • ${arrow}`;
+    }
     
-    div.innerHTML = `<input type="checkbox" id="${safeId}" ${isActive ? 'checked' : ''}><div class="layer-info"><span class="layer-time">${label}</span><span class="layer-status">${l.cloud_cover != null ? `☁️ ${l.cloud_cover}% ` : ""}${l.acquisition_time.split("T")[0]}</span></div><div class="layer-actions"><button class="dl-btn" title="${t.download_tif}"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 16l-5-5h3V4h4v7h3l-5 5zm9 2v2H3v-2h18z"/></svg></button><span class="file-size">${formatSize(l.file_size_bytes)}</span></div>`;
+    div.innerHTML = `<input type="checkbox" id="${safeId}" ${isActive ? 'checked' : ''}><div class="layer-info"><span class="layer-time">${label}</span><span class="layer-status">${info}</span></div><div class="layer-actions"><button class="dl-btn" title="${t.download_tif}"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 16l-5-5h3V4h4v7h3l-5 5zm9 2v2H3v-2h18z"/></svg></button><span class="file-size">${formatSize(l.file_size_bytes)}</span></div>`;
     div.onclick = (e) => {
         if (e.target.closest('.dl-btn')) { e.stopPropagation(); downloadFile(window.location.href.split('index.html')[0].split('?')[0] + IMAGE_BASE_URL + l.path, l.path.split('/').pop()); return; }
         if (e.target.tagName !== 'INPUT') { const chk = div.querySelector('input'); chk.checked = !chk.checked; toggleLayer(l, chk.checked, div); }
@@ -933,6 +1107,16 @@ function updateLegends() {
     });
 }
 
+function updateFireOpacityArea() {
+    const hasFire = Object.values(activeLayers).some(o => o.layer.getVisible() && o.meta.legend_id && o.meta.legend_id.startsWith('S3-FIRE'));
+    document.getElementById('fire-opacity-area').style.display = hasFire ? 'block' : 'none';
+}
+
+function updateRadarOpacityArea() {
+    const hasRadar = Object.values(activeLayers).some(o => o.layer.getVisible() && o.meta.legend_id && o.meta.legend_id.startsWith('S1-') && !o.meta.legend_id.startsWith('S1-AIS'));
+    document.getElementById('radar-opacity-area').style.display = hasRadar ? 'block' : 'none';
+}
+
 async function toggleLayer(l, vis, el, isRestoring = false) {
     const path = l.path;
     if (vis) {
@@ -943,7 +1127,7 @@ async function toggleLayer(l, vis, el, isRestoring = false) {
         }
         if (activeLayers[path]) {
             activeLayers[path].layer.setVisible(true); el.classList.add('active');
-            updateLegends(); updateGroupMarkers(); if (!isRestoring) saveSettings(); return;
+            updateLegends(); updateGroupMarkers(); updateFireOpacityArea(); updateRadarOpacityArea(); if (!isRestoring) saveSettings(); return;
         }
         el.classList.add('active', 'loading'); document.getElementById('map-spinner').style.display = 'block';
         try {
@@ -954,13 +1138,28 @@ async function toggleLayer(l, vis, el, isRestoring = false) {
                 crossOrigin: 'anonymous'
             });
             const layer = new ol.layer.WebGLTile({ source: source, opacity: 1, visible: true });
-            layer.setZIndex(Math.floor((new Date(l.acquisition_time)).getTime() / 100000));
+            const ts = Math.floor((new Date(l.acquisition_time)).getTime() / 100000);
+            const sat = l.satellite || '';
+            let groupBase = 0;
+            if (sat === 'S3') groupBase = 60000000;
+            else if (sat === 'S1') groupBase = 30000000;
+            layer.setZIndex(groupBase + ts);
             activeLayers[path] = { layer, meta: l };
-            map.addLayer(layer); updateLegends(); updateGroupMarkers(); if (!isRestoring) saveSettings();
+            // Apply fire opacity if this is an S3 fire layer
+            if (l.legend_id && l.legend_id.startsWith('S3-FIRE')) {
+                const opacity = parseFloat(document.getElementById('fire-opacity-slider').value) / 100;
+                layer.setOpacity(opacity);
+            }
+            // Apply radar opacity if this is an S1 radar layer (non-AIS)
+            if (l.legend_id && l.legend_id.startsWith('S1-') && !l.legend_id.startsWith('S1-AIS')) {
+                const opacity = parseFloat(document.getElementById('radar-opacity-slider').value) / 100;
+                layer.setOpacity(opacity);
+            }
+            map.addLayer(layer); updateLegends(); updateGroupMarkers(); updateFireOpacityArea(); updateRadarOpacityArea(); if (!isRestoring) saveSettings();
             el.classList.remove('loading'); document.getElementById('map-spinner').style.display = 'none';
         } catch (err) { el.classList.remove('active', 'loading'); el.querySelector('input').checked = false; updateGroupMarkers(); document.getElementById('map-spinner').style.display = 'none'; }
     } else {
         el.classList.remove('active', 'loading');
-        if (activeLayers[path]) { activeLayers[path].layer.setVisible(false); updateLegends(); updateGroupMarkers(); if (!isRestoring) saveSettings(); }
+        if (activeLayers[path]) { activeLayers[path].layer.setVisible(false); updateLegends(); updateGroupMarkers(); updateFireOpacityArea(); updateRadarOpacityArea(); if (!isRestoring) saveSettings(); }
     }
 }

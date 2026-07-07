@@ -29,6 +29,7 @@ import numpy as np
 import rasterio as rio
 from osgeo import gdal
 from rasterio.enums import ColorInterp
+from scipy.ndimage import uniform_filter
 
 import cog_finalizer as cog
 import constants as c
@@ -44,6 +45,7 @@ if os.path.exists(AIS_DIR) and AIS_DIR not in sys.path:
 # --- CUDA Acceleration ---
 try:
     import cupy as cp
+    from cupyx.scipy.ndimage import uniform_filter as cp_uniform_filter
 
     HAS_CUDA: bool = os.getenv("DISABLE_GPU", "false").lower() not in ("true", "1")
 except ImportError:
@@ -191,11 +193,103 @@ def _apply_osint_ramp(
     return [r, g, b]
 
 
+def _guided_filter_cpu(
+    I: np.ndarray, p: np.ndarray, radius: int, eps: float
+) -> np.ndarray:
+    size = 2 * radius + 1
+    mean_I = uniform_filter(I, size=size)
+    mean_p = uniform_filter(p, size=size)
+    mean_Ip = uniform_filter(I * p, size=size)
+    mean_II = uniform_filter(I * I, size=size)
+    cov_Ip = mean_Ip - mean_I * mean_p
+    var_I = mean_II - mean_I * mean_I
+    del mean_Ip, mean_II
+    a = cov_Ip / (var_I + eps)
+    b = mean_p - a * mean_I
+    del cov_Ip, var_I, mean_I, mean_p
+    mean_a = uniform_filter(a, size=size)
+    mean_b = uniform_filter(b, size=size)
+    del a, b
+    result = mean_a * I + mean_b
+    del mean_a, mean_b, I, p
+    gc.collect()
+    return result
+
+
+def _guided_filter_cuda(
+    I: np.ndarray, p: np.ndarray, radius: int, eps: float
+) -> np.ndarray:
+    m_pool = cp.get_default_memory_pool()
+    size = 2 * radius + 1
+    g_I = cp.array(I, dtype=cp.float32)
+    g_p = cp.array(p, dtype=cp.float32)
+    mean_I = cp_uniform_filter(g_I, size=size)
+    mean_p = cp_uniform_filter(g_p, size=size)
+    mean_Ip = cp_uniform_filter(g_I * g_p, size=size)
+    mean_II = cp_uniform_filter(g_I * g_I, size=size)
+    cov_Ip = mean_Ip - mean_I * mean_p
+    var_I = mean_II - mean_I * mean_I
+    a = cov_Ip / (var_I + eps)
+    b = mean_p - a * mean_I
+    mean_a = cp_uniform_filter(a, size=size)
+    mean_b = cp_uniform_filter(b, size=size)
+    result = cp.asnumpy(mean_a * g_I + mean_b)
+    del (
+        g_I, g_p, mean_I, mean_p, mean_Ip, mean_II,
+        cov_Ip, var_I, a, b, mean_a, mean_b,
+    )
+    m_pool.free_all_blocks()
+    return result
+
+
+def _guided_filter(
+    I: np.ndarray, p: np.ndarray, radius: int, eps: float
+) -> np.ndarray:
+    if HAS_CUDA:
+        return _guided_filter_cuda(I, p, radius, eps)
+    return _guided_filter_cpu(I, p, radius, eps)
+
+
+def _apply_guided_filter_rgb(
+    rgba: np.ndarray,
+    guidance: Optional[np.ndarray] = None,
+    radius: int = 4,
+    eps: float = 0.01,
+    detail_strength: float = 1.0,
+) -> np.ndarray:
+    rgb = rgba[:3].astype(np.float32) / 255.0
+    h, w = rgb.shape[1:]
+    pad = radius
+    base = np.empty_like(rgb)
+    gf_guidance = guidance.astype(np.float32) / 255.0 if guidance is not None else None
+    for c in range(3):
+        channel = rgb[c]
+        g = gf_guidance if gf_guidance is not None else channel
+        ch_pad = np.pad(channel, pad, mode="edge")
+        g_pad = np.pad(g, pad, mode="edge")
+        filtered_pad = _guided_filter(g_pad, ch_pad, radius, eps)
+        base[c] = filtered_pad[pad : pad + h, pad : pad + w]
+    base = np.clip(base * 255, 0, 255).astype(np.uint8)
+    if detail_strength == -1.0:
+        output = np.concatenate([base, rgba[3:4]], axis=0)
+    else:
+        inp = rgba[:3].astype(np.float32)
+        base_f32 = base.astype(np.float32)
+        detail = inp - base_f32
+        enhanced = np.clip(inp + detail_strength * detail, 0, 255).astype(np.uint8)
+        output = np.concatenate([enhanced, rgba[3:4]], axis=0)
+    gc.collect()
+    return output
+
+
 def _render_internal(
     visual_paths: Dict[str, str],
     analytic_paths: Dict[str, str],
     skip_overviews: bool = False,
     cloud_cover: Optional[float] = None,
+    relative_orbit: Optional[str] = None,
+    orbit_direction: Optional[str] = None,
+    platform: Optional[str] = None,
 ) -> None:
     """Macro-block threaded renderer for S2 indices using Double Buffering and GPU Concurrency."""
     func.perf_logger.start_step("S2 Single-Pass Render", use_gpu=True)
@@ -507,6 +601,24 @@ def _render_internal(
                         [scale_nd(ndvi_raw), scale_nd(ndre_raw), s_b03, alpha], axis=0
                     )
 
+                if "TCI_GF" in v_handles and "TCI_VIS" in results:
+                    results["TCI_GF_VIS"] = _apply_guided_filter_rgb(
+                        results["TCI_VIS"],
+                        guidance=s_b08,
+                        radius=c.GF_RADIUS,
+                        eps=c.GF_EPSILON,
+                        detail_strength=c.GF_DETAIL_STRENGTH,
+                    )
+                if "NIRFC_GF" in v_handles and "NIRFC_VIS" in results:
+                    results["NIRFC_GF_VIS"] = _apply_guided_filter_rgb(
+                        results["NIRFC_VIS"],
+                        guidance=None,
+                        radius=c.GF_RADIUS,
+                        eps=c.GF_EPSILON,
+                        detail_strength=c.GF_DETAIL_STRENGTH,
+                    )
+
+                gc.collect()
                 write_queue.put((window, results), timeout=120)
             except Exception as e:
                 print(f"\nCRITICAL: S2 processing loop failed: {e}", flush=True)
@@ -518,6 +630,14 @@ def _render_internal(
         t_write.join()
         vis_output_paths: List[str] = [h.name for h in v_handles.values()]
         for h in list(v_handles.values()) + list(a_handles.values()):
+            if relative_orbit:
+                h.update_tags(RELATIVE_ORBIT_NUMBER=relative_orbit)
+            if orbit_direction:
+                h.update_tags(PASS_DIRECTION=orbit_direction)
+            if platform:
+                h.update_tags(SATELLITE=platform)
+            if cloud_cover is not None:
+                h.update_tags(CLOUD_COVERAGE_ASSESSMENT=str(cloud_cover))
             h.close()
 
         func.perf_logger.end_step()
@@ -535,21 +655,25 @@ def _render_internal(
                 # Inside parallel task, we force GDAL to single-thread per process
                 # to stay within memory budget
                 os.environ["GDAL_NUM_THREADS"] = "1"
-                build_overviews_gdal(path)
+                cog.convert_to_cog(path)
+                cog.ensure_overviews(path)
                 p_type = path.split("/")[-2].upper()
                 eff_res = (
                     20.0
                     if p_type in ["AP", "NDBI", "NDBI_CLEAN", "NDRE", "NBR", "CAMO"]
                     else 10.0
                 )
+                display_type = p_type.replace("_GF", "-GF")
                 meta.generate_sidecar(
                     path,
-                    f"S2-{p_type}",
-                    f"S2-{p_type}",
+                    f"S2-{display_type}",
+                    f"S2-{display_type}",
                     effective_res=eff_res,
                     cloud_cover=cloud_cover,
+                    relative_orbit=relative_orbit,
+                    orbit_direction=orbit_direction,
+                    satellite=platform,
                 )
-                cog.convert_to_cog(path)
 
             with ThreadPoolExecutor(
                 max_workers=min(len(vis_output_paths), max_finalizers)
@@ -575,6 +699,18 @@ def run_pipeline(
 
     v_paths: Dict[str, str] = {}
     a_paths: Dict[str, str] = {}
+
+    # Normalize process names: TCI-GF -> TCI_GF
+    processes = [p.replace("-", "_") for p in processes]
+    # Map fusion process names too (used below)
+    norm_fusion = [p.replace("-", "_") for p in (fusion_processes or [])]
+
+    # Auto-add source products when GF variants are requested
+    gf_variants = {"TCI_GF": "TCI", "NIRFC_GF": "NIRFC"}
+    for gf_key, src_key in gf_variants.items():
+        if gf_key in processes and src_key not in processes:
+            processes.append(src_key)
+
     # Map dependencies: visual_product -> [required_analytic_indices]
     s2_deps = {
         "NDVI": ["NDVI"],
@@ -592,7 +728,7 @@ def run_pipeline(
             needed_analytics.update(s2_deps[p])
 
     # Add fusion dependencies for S2:
-    if "TARGET-PROBE-V2" in fusion_processes:
+    if "TARGET_PROBE_V2" in norm_fusion:
         needed_analytics.update(["NDBI", "NDRE"])
 
     for p in [
@@ -605,9 +741,14 @@ def run_pipeline(
         "NBR",
         "CAMO",
         "NDBI_CLEAN",
+        "TCI_GF",
+        "NIRFC_GF",
     ]:
         if p in processes:
-            v_paths[p] = f"{c.DIRS[f'VIS_S2_{p}']}/{name}-{p}"
+            if p.endswith("_GF"):
+                v_paths[p] = f"{c.DIRS[f'VIS_S2_{p}']}/{name}-{p.replace('_', '-')}"
+            else:
+                v_paths[p] = f"{c.DIRS[f'VIS_S2_{p}']}/{name}-{p}"
 
         # Always produce analytic if it's in the 'needed' set or if explicitly requested
         if p in needed_analytics or p in processes:
@@ -618,8 +759,23 @@ def run_pipeline(
     cc_val = meta_dict.get("CLOUD_COVERAGE_ASSESSMENT")
     cloud_cover = float(cc_val) if cc_val is not None else None
 
+    # Extract orbit and platform metadata
+    meta_dict = ds_obj.GetMetadata()
+    rel_orbit = meta_dict.get("RELATIVE_ORBIT_NUMBER")
+    orbit_dir = meta_dict.get("PASS_DIRECTION")
+    
+    platform_match = re.search(r"(S2[ABC])_", product_uri)
+    platform = platform_match.group(1) if platform_match else "S2"
+
     prepare(ds_obj)
-    _render_internal(v_paths, a_paths, cloud_cover=cloud_cover)
+    _render_internal(
+        v_paths,
+        a_paths,
+        cloud_cover=cloud_cover,
+        relative_orbit=rel_orbit,
+        orbit_direction=orbit_dir,
+        platform=platform,
+    )
 
     # AIS Correlation
     if "AIS" in processes and "TCI" in v_paths:
@@ -642,6 +798,9 @@ def run_pipeline(
                             "S2-TCI-AIS",
                             effective_res=10.0,
                             cloud_cover=cloud_cover,
+                            relative_orbit=rel_orbit,
+                            orbit_direction=orbit_dir,
+                            satellite=platform,
                         )
                 else:
                     print("No AIS data found for S2 product.")

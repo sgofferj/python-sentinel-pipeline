@@ -14,14 +14,16 @@ Notification module for the Sentinel pipeline using Apprise.
 """
 
 import os
+from typing import Optional
+
 import apprise
 
 
 def send_notification(
     message: str,
     title: str = "Sentinel Pipeline",
-    urls: str = None,
-    attachment: str = None,
+    urls: Optional[str] = None,
+    attachment: Optional[str] = None,
 ) -> None:
     """Sends a notification via Apprise."""
     if not urls:

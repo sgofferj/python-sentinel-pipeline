@@ -38,7 +38,9 @@ DIRS: Dict[str, str] = {
     "VIS_S1_VH": os.path.join(OUT_BASE, "visual/s1/vh"),
     "VIS_S1_RATIO": os.path.join(OUT_BASE, "visual/s1/ratio"),
     "VIS_S2_TCI": os.path.join(OUT_BASE, "visual/s2/tci"),
+    "VIS_S2_TCI_GF": os.path.join(OUT_BASE, "visual/s2/tci_gf"),
     "VIS_S2_NIRFC": os.path.join(OUT_BASE, "visual/s2/nirfc"),
+    "VIS_S2_NIRFC_GF": os.path.join(OUT_BASE, "visual/s2/nirfc_gf"),
     "VIS_S2_NDVI": os.path.join(OUT_BASE, "visual/s2/ndvi"),
     "VIS_S2_NDRE": os.path.join(OUT_BASE, "visual/s2/ndre"),
     "VIS_S2_NDBI": os.path.join(OUT_BASE, "visual/s2/ndbi"),
@@ -46,6 +48,8 @@ DIRS: Dict[str, str] = {
     "VIS_S2_NBR": os.path.join(OUT_BASE, "visual/s2/nbr"),
     "VIS_S2_CAMO": os.path.join(OUT_BASE, "visual/s2/camo"),
     "VIS_S2_AP": os.path.join(OUT_BASE, "visual/s2/ap"),
+    "VIS_S3_BT": os.path.join(OUT_BASE, "visual/s3/bt"),
+    "VIS_S3_FIRE": os.path.join(OUT_BASE, "visual/s3/fire"),
     "VIS_FUSED": os.path.join(OUT_BASE, "visual/fused"),
     "VIS_ROI": os.path.join(OUT_BASE, "visual/roi"),
     # --- ANALYTIC (Float32 for Change Detection) ---
@@ -55,6 +59,7 @@ DIRS: Dict[str, str] = {
     "ANA_S2_NDRE": os.path.join(OUT_BASE, "analytic/s2/ndre"),
     "ANA_S2_NDBI": os.path.join(OUT_BASE, "analytic/s2/ndbi"),
     "ANA_S2_NBR": os.path.join(OUT_BASE, "analytic/s2/nbr"),
+    "ANA_S3_BT": os.path.join(OUT_BASE, "analytic/s3/bt"),
     # --- System ---
     "S1S2_LEGENDS": os.path.join(OUT_BASE, "legends"),
     "S1S2_LOGS": os.path.join(OUT_BASE, "logs"),
@@ -102,6 +107,26 @@ S2_REF_MAX: int = 4000
 # Multi-temporal Normalization percentiles
 S2_PCT_MIN: int = 2
 S2_PCT_MAX: int = 98
+
+# ----- Guided Filter Configuration --------------------------------
+GF_RADIUS: int = int(os.getenv("GF_RADIUS", "2"))
+GF_EPSILON: float = float(os.getenv("GF_EPSILON", "0.01"))
+GF_GUIDANCE: str = os.getenv("GF_GUIDANCE", "B08")
+# Detail enhancement: 0 = unchanged, 1 = standard, -1 = base only (smoothing)
+GF_DETAIL_STRENGTH: float = float(os.getenv("GF_DETAIL_STRENGTH", "2.0"))
+
+# ----- Sentinel 3 SLSTR Band Indices --------------------------------
+S3_BAND_S7: int = 1  # 3.74 µm (MIR, fire)
+S3_BAND_S8: int = 2  # 10.85 µm (TIR, fire)
+S3_BAND_S9: int = 3  # 12.0 µm (TIR)
+S3_BAND_F1: int = 4  # 3.74 µm (fire band, high range)
+S3_BAND_F2: int = 5  # 10.85 µm (fire band, high range)
+
+# ----- S3 Rendering Constraints -------------------------------------
+S3_BT_MIN: float = 250.0  # Kelvin
+S3_BT_MAX: float = 350.0  # Kelvin
+S3_FIRE_THRESHOLD: float = 300.0  # Kelvin - minimum S7 for fire detection
+S3_CLOUD_TEMP_THRESHOLD: float = 275.0  # Kelvin - S8 temp below which = cold cloud (false fire)
 
 # ----- NDVI Integrated Palette (from ndvi2.txt) ---------------------
 NDVI_PALETTE: Dict[str, np.ndarray] = {

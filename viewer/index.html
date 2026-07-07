@@ -40,7 +40,6 @@
             </div>
             <h1 data-i18n="title">Satelliittikuvat</h1>
             <p id="acq-range" style="font-size: 0.65rem; color: #aaa; margin-top: 5px; margin-bottom: 2px; font-family: monospace;"></p>
-            <p id="next-overflight" style="font-size: 0.65rem; color: #00bcd4; margin-bottom: 10px; font-family: monospace;"></p>
             <p data-i18n="select_layers">Valitse kartalle päällekkäin asetettavat tasot.</p>
             <div class="action-row">
                 <button id="deselect-all" class="deselect-btn" data-i18n-title="clear" data-i18n="clear">Tyhjennä</button>
@@ -49,12 +48,29 @@
             <div class="action-row">
                 <button id="identify-optical" class="toggle-btn" data-i18n-title="optical" data-i18n="optical">Optinen</button>
                 <button id="identify-radar" class="toggle-btn" data-i18n-title="radar" data-i18n="radar">Tutka</button>
+                <button id="overpass-s1" class="toggle-btn" data-i18n-title="overpass_s1" data-i18n="overpass_s1">S1 Ohitus</button>
+                <button id="overpass-s2" class="toggle-btn" data-i18n-title="overpass_s2" data-i18n="overpass_s2">S2 Ohitus</button>
+                <button id="overpass-s3" class="toggle-btn" data-i18n-title="overpass_s3" data-i18n="overpass_s3">S3 Ohitus</button>
                 <button id="toggle-fullscreen" class="action-btn" data-i18n-title="fullscreen"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg></button>
-                <button id="map-screenshot" class="action-btn" data-i18n-title="screenshot" data-i18n="screenshot">📷</button>
+                <button id="map-screenshot" class="action-btn" data-i18n-title="screenshot"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M9 2L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/></svg></button>
             </div>
         </div>
         <div id="base-picker" class="base-area">
             <!-- Baselayer toggles will appear here -->
+        </div>
+        <div id="fire-opacity-area" class="base-area" style="display:none; border-top: 1px solid #333; padding-top: 6px; margin-top: 4px;">
+            <label style="display:flex; align-items:center; gap:8px; font-size:10px; color:#ffeb3b; font-family:monospace;">
+                <span data-i18n="fire_opacity">FIRE</span>
+                <input type="range" id="fire-opacity-slider" min="0" max="100" value="100" style="flex:1; accent-color:#ff4444;">
+                <span id="fire-opacity-value" style="min-width:28px; text-align:right;">100%</span>
+            </label>
+        </div>
+        <div id="radar-opacity-area" class="base-area" style="display:none; border-top: 1px solid #333; padding-top: 6px; margin-top: 4px;">
+            <label style="display:flex; align-items:center; gap:8px; font-size:10px; color:#4fc3f7; font-family:monospace;">
+                <span data-i18n="radar_opacity">RADAR</span>
+                <input type="range" id="radar-opacity-slider" min="0" max="100" value="100" style="flex:1; accent-color:#4fc3f7;">
+                <span id="radar-opacity-value" style="min-width:28px; text-align:right;">100%</span>
+            </label>
         </div>
         <div id="layer-picker" class="scroll-area">
             <div id="loading">

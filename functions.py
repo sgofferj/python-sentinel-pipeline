@@ -311,6 +311,18 @@ def this_moment() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def offset_timestamp(iso_ts: str, hours: int = 24) -> str:
+    """
+    Subtracts hours from an ISO 8601 timestamp string.
+    Handles both 'Z' and '+00:00' formats.
+    """
+    # Clean Z for fromisoformat if needed (Python < 3.11)
+    ts = iso_ts.replace("Z", "+00:00")
+    dt = datetime.fromisoformat(ts)
+    offset_dt = dt - timedelta(hours=hours)
+    return offset_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def yesterday(frmt: str = "%Y-%m-%d", is_string: bool = True) -> Any:
     """Returns yesterday's date."""
     yest = datetime.now() - timedelta(1)

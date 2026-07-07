@@ -48,7 +48,9 @@ try:
     import importlib.util
 
     HAS_CUPY_INSTALLED = importlib.util.find_spec("cupy") is not None
-    HAS_CUDA: bool = HAS_CUPY_INSTALLED and os.getenv("DISABLE_GPU", "false").lower() not in (
+    HAS_CUDA: bool = HAS_CUPY_INSTALLED and os.getenv(
+        "DISABLE_GPU", "false"
+    ).lower() not in (
         "true",
         "1",
     )
@@ -124,6 +126,7 @@ def prepare(ds_obj: gdal.Dataset) -> None:
             dst_crs="EPSG:3857",
             resolution=10,
             dst_alpha=True,
+            src_nodata=0,
         )
         gpu_warp.reproject_with_cuda(
             "/tmp/vh_raw.tif",
@@ -131,6 +134,7 @@ def prepare(ds_obj: gdal.Dataset) -> None:
             dst_crs="EPSG:3857",
             resolution=10,
             dst_alpha=True,
+            src_nodata=0,
         )
     else:
         # Standard CPU Path
@@ -138,6 +142,7 @@ def prepare(ds_obj: gdal.Dataset) -> None:
             dstSRS="EPSG:3857",
             xRes=10,
             yRes=10,
+            tps=True,
             multithread=True,
             warpMemoryLimit=2048,
             warpOptions=[f"NUM_THREADS={c.WORKERS}"],
@@ -170,7 +175,11 @@ def cleanup() -> None:
 
 
 def _render_internal(
-    visual_paths: Dict[str, str], analytic_paths: Dict[str, str]
+    visual_paths: Dict[str, str],
+    analytic_paths: Dict[str, str],
+    relative_orbit: Optional[str] = None,
+    orbit_direction: Optional[str] = None,
+    platform: Optional[str] = None,
 ) -> None:
     """Macro-block threaded renderer for maximum GPU saturation using Double Buffering."""
     func.perf_logger.start_step("S1 Single-Pass Render", use_gpu=True)
@@ -354,8 +363,13 @@ def _render_internal(
             t_write.join()
             vis_output_paths: List[str] = [h.name for h in v_handles.values()]
             for h in list(v_handles.values()) + list(a_handles.values()):
+                if relative_orbit:
+                    h.update_tags(RELATIVE_ORBIT_NUMBER=relative_orbit)
+                if orbit_direction:
+                    h.update_tags(ORBIT_DIRECTION=orbit_direction)
+                if platform:
+                    h.update_tags(SATELLITE=platform)
                 h.close()
-
         func.perf_logger.end_step()
 
         if vis_output_paths:
@@ -372,9 +386,16 @@ def _render_internal(
                 # to stay within memory budget
                 os.environ["GDAL_NUM_THREADS"] = "1"
                 cog.convert_to_cog(path)
+                cog.ensure_overviews(path)
                 p_type = path.split("/")[-2].upper()
                 meta.generate_sidecar(
-                    path, f"S1-{p_type}", f"S1-{p_type}", effective_res=15.0
+                    path,
+                    f"S1-{p_type}",
+                    f"S1-{p_type}",
+                    effective_res=15.0,
+                    relative_orbit=relative_orbit,
+                    orbit_direction=orbit_direction,
+                    satellite=platform,
                 )
 
             with ThreadPoolExecutor(
@@ -400,6 +421,14 @@ def run_pipeline(
         return
     name = f"S1_{times_match.groups()[0]}"
 
+    # Extract orbit and platform metadata from source
+    meta_dict = ds_obj.GetMetadata()
+    rel_orbit = meta_dict.get("RELATIVE_ORBIT_NUMBER")
+    orbit_dir = meta_dict.get("ORBIT_DIRECTION")
+
+    platform_match = re.search(r"(S1[A-D])_", desc)
+    platform = platform_match.group(1) if platform_match else "S1"
+
     prepare(ds_obj)
     v_paths: Dict[str, str] = {}
     a_paths: Dict[str, str] = {}
@@ -424,7 +453,13 @@ def run_pipeline(
 
     if "RATIOVVVH" in processes:
         v_paths["RATIO"] = f"{c.DIRS['VIS_S1_RATIO']}/{name}"
-    _render_internal(v_paths, a_paths)
+    _render_internal(
+        v_paths,
+        a_paths,
+        relative_orbit=rel_orbit,
+        orbit_direction=orbit_dir,
+        platform=platform,
+    )
 
     # AIS Correlation
     if "AIS" in processes and "RATIO" in v_paths:
@@ -442,7 +477,13 @@ def run_pipeline(
                     if os.path.exists(ais_tif):
                         cog.convert_to_cog(ais_tif)
                         meta.generate_sidecar(
-                            ais_tif, "S1-RATIO-AIS", "S1-RATIO-AIS", effective_res=15.0
+                            ais_tif,
+                            "S1-RATIO-AIS",
+                            "S1-RATIO-AIS",
+                            effective_res=15.0,
+                            relative_orbit=rel_orbit,
+                            orbit_direction=orbit_dir,
+                            satellite=platform,
                         )
                 else:
                     print("No AIS data found for S1 product.")

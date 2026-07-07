@@ -20,7 +20,7 @@ import json
 import os
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, List, Optional
 
 import numpy as np
@@ -64,8 +64,10 @@ RES_MAP = {
     "S1-RATIO-AIS": 15.0,
     "S2-TCI": 10.0,
     "S2-TCI-AIS": 10.0,
+    "S2-TCI-GF": 10.0,
     "S2-NDVI": 10.0,
     "S2-NIRFC": 10.0,
+    "S2-NIRFC-GF": 10.0,
     "S2-AP": 20.0,
     "S2-NDBI": 20.0,
     "S2-NDBI_CLEAN": 20.0,
@@ -75,6 +77,8 @@ RES_MAP = {
     "FUSED-LIFE-MACHINE": 10.0,
     "FUSED-RADAR-BURN": 10.0,
     "FUSED-TARGET-PROBE-V2": 10.0,
+    "S3-BT": 1000.0,
+    "S3-FIRE": 1000.0,
 }
 
 
@@ -89,7 +93,7 @@ def identify_tif(tif_path: str) -> tuple[str, str]:
     try:
         # We assume the path contains 'visual' to determine sensor/product
         idx = parts.index("visual")
-        sat = parts[idx + 1].upper()  # S1, S2, FUSED, ROI
+        sat = parts[idx + 1].upper()  # S1, S2, S3, FUSED, ROI
     except (ValueError, IndexError):
         return "UNKNOWN", "S2-TCI"
 
@@ -132,6 +136,9 @@ def generate_sidecar(
     legend_id: Optional[str] = None,
     effective_res: Optional[float] = None,
     cloud_cover: Optional[float] = None,
+    relative_orbit: Optional[str] = None,
+    orbit_direction: Optional[str] = None,
+    satellite: Optional[str] = None,
 ) -> None:
     """
     Generates a .json sidecar for a Visual TIF.
@@ -155,11 +162,17 @@ def generate_sidecar(
     try:
         with rio.open(tif_path) as src:
             # 1. Calculate footprint from Alpha channel (usually last band)
-            # We downsample by factor of 10 (10m -> 100m) for footprint extraction.
-            # This makes the vectorization 100x faster and reduces noise automatically.
+            # Downsample to keep vectorisation fast but preserve boundary shape.
+            # For coarse data (S3 at 1000m) this means factor=2–3 (2-3km mask pixels);
+            # for fine data (S2 at 10m) it caps at factor=10 (100m mask pixels).
             mask_band = src.count if src.count > 1 else 1
 
-            factor = 10
+            if effective_res:
+                # Target ~500m mask pixels so vectorisation is fast but
+                # the resulting polygon doesn't have 10km stair-step edges.
+                factor = max(1, min(10, int(effective_res / 500)))
+            else:
+                factor = 10
             new_height = max(1, src.height // factor)
             new_width = max(1, src.width // factor)
 
@@ -223,14 +236,25 @@ def generate_sidecar(
                 # only from the SIDE-CAR metadata to keep JSON compact.
                 combined = fill_holes(combined)
 
-                # Simplify with 40m tolerance
-                combined = combined.simplify(40.0, preserve_topology=True)
+                # Simplify with resolution-aware tolerance.
+                # Coarse mask pixels create stair-step aliasing where each corner
+                # deviates ~mask_pixel/sqrt(2) from the true diagonal boundary.
+                # Tolerance must be large enough to remove these corner vertices.
+                mask_pixel = effective_res * factor if effective_res else 100
+                simplify_tol = max(40.0, mask_pixel * 3.0)
+                combined = combined.simplify(simplify_tol, preserve_topology=True)
 
                 # Extreme noise reduction: keep top 25 parts max
                 if combined.geom_type == "MultiPolygon":
                     parts = sorted(combined.geoms, key=lambda p: p.area, reverse=True)
                     combined = MultiPolygon(parts[:25]) if len(parts) > 1 else parts[0]
-                    combined = combined.simplify(40.0, preserve_topology=True)
+                    combined = combined.simplify(simplify_tol, preserve_topology=True)
+
+                # Final buffer(0) to clean any self-intersections from simplify
+                combined = combined.buffer(0)
+
+                # Re-apply hole-filling after the buffer(0) might have re-created holes
+                combined = fill_holes(combined)
 
                 # Transform to EPSG:4326
                 footprint_raw = transform_geom(src.crs, "EPSG:4326", mapping(combined))
@@ -251,8 +275,9 @@ def generate_sidecar(
             # Extract Acquisition Time from filename
             filename: str = os.path.basename(tif_path)
             timestamp: str = "Unknown"
-            rel_orbit = None
-            orbit_dir = None
+            rel_orbit = relative_orbit
+            orbit_dir = orbit_direction
+            sat_val = satellite
 
             # Check if it's an ROI file first (Name_Prod_Time.tif)
             fn_no_ext = filename.rsplit(".", 1)[0]
@@ -270,34 +295,54 @@ def generate_sidecar(
                 # Standard S1/S2 parsing
                 s1_match: Optional[re.Match] = re.search(r"S1_(\d{8}T\d{6})", filename)
                 s2_match: Optional[re.Match] = re.search(r"-(\d{8}T\d{6}Z)", filename)
+                s3_match: Optional[re.Match] = re.search(r"S3-(\d{8}T\d{6}Z)", filename)
 
-                if s1_match:
+                if s3_match:
+                    raw_t_s3 = s3_match.group(1)
+                    timestamp = (
+                        f"{raw_t_s3[:4]}-{raw_t_s3[4:6]}-{raw_t_s3[6:8]}T"
+                        f"{raw_t_s3[9:11]}:{raw_t_s3[11:13]}:{raw_t_s3[13:15]}Z"
+                    )
+                elif s1_match:
                     raw_t = s1_match.group(1)
                     timestamp = (
                         f"{raw_t[:4]}-{raw_t[4:6]}-{raw_t[6:8]}T"
                         f"{raw_t[9:11]}:{raw_t[11:13]}:{raw_t[13:15]}Z"
                     )
-                    # Extract Orbit Info from S1 metadata
-                    meta_dict = src.tags()
-                    rel_orbit = meta_dict.get("RELATIVE_ORBIT_NUMBER")
-                    orbit_dir = meta_dict.get("ORBIT_DIRECTION")
                 elif s2_match:
                     raw_t_s2 = s2_match.group(1)
                     timestamp = (
                         f"{raw_t_s2[:4]}-{raw_t_s2[4:6]}-{raw_t_s2[6:8]}T"
                         f"{raw_t_s2[9:11]}:{raw_t_s2[11:13]}:{raw_t_s2[13:15]}Z"
                     )
-                    # S2 metadata
-                    meta_dict = src.tags()
-                    # S2 doesn't always have these in the TIF tags if not explicitly set
-                    # But we can try to get them from GDAL metadata
+
+            # Fallback: read metadata from TIFF tags for any product type
+            # (used when generate_sidecar is called from rebuild_metadata.py
+            #  without explicit parameters)
+            if not rel_orbit or not orbit_dir or not sat_val or cloud_cover is None:
+                meta_dict = src.tags()
+                if not rel_orbit:
                     rel_orbit = meta_dict.get("RELATIVE_ORBIT_NUMBER")
-                    orbit_dir = meta_dict.get("PASS_DIRECTION")
+                if not orbit_dir:
+                    orbit_dir = meta_dict.get("ORBIT_DIRECTION") or meta_dict.get(
+                        "PASS_DIRECTION"
+                    )
+                if not sat_val:
+                    sat_val = meta_dict.get("SATELLITE")
+                if cloud_cover is None:
+                    cc_tag = meta_dict.get("CLOUD_COVERAGE_ASSESSMENT")
+                    if cc_tag is not None:
+                        try:
+                            cloud_cover = float(cc_tag)
+                        except (ValueError, TypeError):
+                            pass
 
             metadata = {
                 "product": product_type,
                 "acquisition_time": timestamp,
-                "render_time": datetime.now().isoformat() + "Z",
+                "render_time": datetime.now(timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z"),
                 "resolution": (
                     effective_res if effective_res is not None else round(src.res[0], 1)
                 ),
@@ -311,6 +356,8 @@ def generate_sidecar(
                 metadata["relative_orbit"] = rel_orbit
             if orbit_dir:
                 metadata["orbit_direction"] = orbit_dir
+            if sat_val:
+                metadata["satellite"] = sat_val
 
             if cloud_cover is not None:
                 metadata["cloud_cover"] = round(float(cloud_cover), 1)

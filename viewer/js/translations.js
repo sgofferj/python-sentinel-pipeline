@@ -24,7 +24,13 @@ const UI_TRANSLATIONS = {
         fullscreen: "Koko näyttö",
         screenshot: "Kuvakaappaus",
         roi: "ROI",
-        by_roi: "Alueittain"
+        by_roi: "Alueittain",
+        overpass_s1: "S1 Ohitus",
+        overpass_s2: "S2 Ohitus",
+        overpass_s3: "S3 Ohitus",
+        fire_opacity: "FIRE",
+        radar_opacity: "RADAR",
+        s3: "S3"
     },
     sv: {
         title: "Satellitbilder",
@@ -51,7 +57,13 @@ const UI_TRANSLATIONS = {
         fullscreen: "Helskärm",
         screenshot: "Skärmdump",
         roi: "ROI",
-        by_roi: "Per område"
+        by_roi: "Per område",
+        overpass_s1: "S1 Överflygning",
+        overpass_s2: "S2 Överflygning",
+        overpass_s3: "S3 Överflygning",
+        fire_opacity: "BRAND",
+        radar_opacity: "RADAR",
+        s3: "S3"
     },
     en: {
         title: "Satellite Imagery",
@@ -78,7 +90,13 @@ const UI_TRANSLATIONS = {
         fullscreen: "Fullscreen",
         screenshot: "Screenshot",
         roi: "ROI",
-        by_roi: "By ROI"
+        by_roi: "By ROI",
+        overpass_s1: "S1 Overpass",
+        overpass_s2: "S2 Overpass",
+        overpass_s3: "S3 Overpass",
+        fire_opacity: "FIRE",
+        radar_opacity: "RADAR",
+        s3: "S3"
     },
     de: {
         title: "Satellitenbilder",
@@ -105,16 +123,25 @@ const UI_TRANSLATIONS = {
         fullscreen: "Vollbild",
         screenshot: "Screenshot",
         roi: "ROI",
-        by_roi: "Nach Region"
+        by_roi: "Nach Region",
+        overpass_s1: "S1 Überflug",
+        overpass_s2: "S2 Überflug",
+        overpass_s3: "S3 Überflug",
+        fire_opacity: "FEUER",
+        radar_opacity: "RADAR",
+        s3: "S3"
         },
 };
 
 const PRODUCT_TRANSLATIONS = {
     fi: {
+        "S3": { title: "Lämpö", subtitle: "(SLSTR lämpöhavainnointi)" },
         "S1": { title: "SAR tutka", subtitle: "(ESA Sentinel 1)" },
         "S2": { title: "Optinen", subtitle: "(ESA Sentinel 2)" },
         "FUSED": { title: "Sensorifuusio", subtitle: "(S1 + S2 yhdistelmäkuvat)" },
         "ROI": { title: "Kiinnostavat alueet", subtitle: "(ROI)" },
+        "BT": { title: "BT-kooste", subtitle: "(Lämpötilavärikuva)" },
+        "FIRE": { title: "Palohavaitseminen", subtitle: "(Lämpöpoikkeama)" },
         "VV": { title: "VV-polarisaatio", subtitle: "(Pystysuora lähetys ja vastaanotto)" },
         "VH": { title: "VH-polarisaatio", subtitle: "(Pysty-vaaka ristiinpolarisaatio)" },
         "RATIO": { title: "VV/VH-suhde", subtitle: "" },
@@ -133,10 +160,13 @@ const PRODUCT_TRANSLATIONS = {
         "TCI-AIS": { title: "AIS-korrelaatio (TCI)", subtitle: "(Alustunnistus tosivärikuvasta)" }
     },
     sv: {
+        "S3": { title: "Termisk", subtitle: "(SLSTR värmekänslighet)" },
         "S1": { title: "SAR-radar", subtitle: "(ESA Sentinel 1)" },
         "S2": { title: "Optisk", subtitle: "(ESA Sentinel 2)" },
         "FUSED": { title: "Sensorfusion", subtitle: "(Kombinerade S1 + S2-bilder)" },
         "ROI": { title: "Intressanta områden", subtitle: "(ROI)" },
+        "BT": { title: "BT-komposit", subtitle: "(Temperaturfärgbild)" },
+        "FIRE": { title: "Branddetektering", subtitle: "(Termisk avvikelse)" },
         "VV": { title: "VV-polarisation", subtitle: "(Vertikal sändning och mottagning)" },
         "VH": { title: "VH-polarisation", subtitle: "(Vertikal-horisontell krysspolarisation)" },
         "RATIO": { title: "VV/VH-förhållande", subtitle: "" },
@@ -155,10 +185,13 @@ const PRODUCT_TRANSLATIONS = {
         "TCI-AIS": { title: "AIS-korrelation (TCI)", subtitle: "(Fartygshistorik på sannfärg)" }
     },
     en: {
+        "S3": { title: "Thermal", subtitle: "(SLSTR heat detection)" },
         "S1": { title: "SAR Radar", subtitle: "(ESA Sentinel 1)" },
         "S2": { title: "Optical", subtitle: "(ESA Sentinel 2)" },
         "FUSED": { title: "Sensor Fusion", subtitle: "(Combined S1 + S2 imagery)" },
         "ROI": { title: "Regions of Interest", subtitle: "(ROI)" },
+        "BT": { title: "BT Composite", subtitle: "(Brightness temperature)" },
+        "FIRE": { title: "Fire Detection", subtitle: "(Thermal anomaly)" },
         "VV": { title: "VV Polarization", subtitle: "(Vertical transmit and receive)" },
         "VH": { title: "VH Polarization", subtitle: "(Vertical-horizontal cross-polarization)" },
         "RATIO": { title: "VV/VH Ratio", subtitle: "" },
@@ -177,10 +210,13 @@ const PRODUCT_TRANSLATIONS = {
         "TCI-AIS": { title: "AIS Correlation (TCI)", subtitle: "(Vessel correlation on True Color)" }
     },
     de: {
+        "S3": { title: "Thermisch", subtitle: "(SLSTR Wärmeerkennung)" },
         "S1": { title: "SAR Radar", subtitle: "(ESA Sentinel 1)" },
         "S2": { title: "Optisch", subtitle: "(ESA Sentinel 2)" },
         "FUSED": { title: "Sensorfusion", subtitle: "(Combined S1 + S2 imagery)" },
         "ROI": { title: "Interessante Regionen", subtitle: "(ROI)" },
+        "BT": { title: "BT-Komposit", subtitle: "(Helligkeitstemperatur)" },
+        "FIRE": { title: "Branderkennung", subtitle: "(Thermische Anomalie)" },
         "VV": { title: "VV-Polarisation", subtitle: "(Vertikal gesendet und empfangen)" },
         "VH": { title: "VH-Polarisation", subtitle: "(Vertikal-Horizontal Kreuzpolarisation)" },
         "RATIO": { title: "VV/VH-Verhältnis", subtitle: "" },

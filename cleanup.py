@@ -77,15 +77,39 @@ def parse_acquisition_time_from_filename(filename: str) -> Optional[datetime]:
         except ValueError:
             pass
 
+    s3_match = re.search(r"S3[AB]_.*_(\d{8}T\d{6})_", filename)
+    if s3_match:
+        time_str = s3_match.group(1)
+        try:
+            dt = datetime.strptime(time_str, "%Y%m%dT%H%M%S")
+            return dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+
     return None
 
 
-def find_outdated_products(days: int) -> List[Dict[str, Any]]:
-    """Scans visual outputs to find products older than 'days'."""
+def find_outdated_products(
+    days: int, prefix: Optional[str] = None, scan_dir: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Scans visual outputs to find products older than 'days'.
+
+    Args:
+        days: Age in days of products to keep.
+        prefix: Optional satellite prefix filter (e.g. "S1", "S2", "S3").
+                Only products whose base name starts with this prefix are returned.
+        scan_dir: Optional subdirectory under visual/ to restrict scanning to
+                  (e.g. "fused" for fusion products).
+    """
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
-    outdated = []
+    outdated: List[Dict[str, Any]] = []
 
     visual_root = os.path.join(c.DIRS["OUT"], "visual")
+    if scan_dir:
+        visual_root = os.path.join(visual_root, scan_dir)
+
+    if not os.path.exists(visual_root):
+        return outdated
 
     for root, _, files in os.walk(visual_root):
         for file in files:
@@ -94,8 +118,9 @@ def find_outdated_products(days: int) -> List[Dict[str, Any]]:
                 acq_time = get_acquisition_time(json_path)
 
                 if acq_time and acq_time < cutoff_date:
-                    # Found an outdated product
                     base_name = file.replace(".json", "")
+                    if prefix and not base_name.startswith(prefix):
+                        continue
                     outdated.append(
                         {
                             "base_name": base_name,
@@ -103,6 +128,68 @@ def find_outdated_products(days: int) -> List[Dict[str, Any]]:
                             "acq_time": acq_time,
                         }
                     )
+
+    return outdated
+
+
+_S2_TILE_RE = re.compile(r"_T(\d{2}[A-Z]{3})_")
+
+
+def find_s2_excess_versions(max_versions: int) -> List[Dict[str, Any]]:
+    """Scans S2 visual products and returns those exceeding max_versions per tile.
+
+    Groups S2 products by their UTM grid tile (e.g. T35VPK) and keeps only
+    the N most recent ones. The rest are marked outdated regardless of age.
+    """
+    products_by_tile: Dict[str, List[Dict[str, Any]]] = {}
+    visual_root = os.path.join(c.DIRS["OUT"], "visual")
+
+    if not os.path.exists(visual_root):
+        return []
+
+    for root, _, files in os.walk(visual_root):
+        for file in files:
+            if file.endswith(".json") and file != "inventory.json":
+                json_path = os.path.join(root, file)
+                base_name = file.replace(".json", "")
+
+                if not base_name.startswith("S2"):
+                    continue
+
+                match = _S2_TILE_RE.search(base_name)
+                if not match:
+                    continue
+                tile = match.group(1)
+
+                acq_time = get_acquisition_time(json_path)
+                if acq_time is None:
+                    continue
+
+                products_by_tile.setdefault(tile, []).append(
+                    {
+                        "base_name": base_name,
+                        "json_path": json_path,
+                        "acq_time": acq_time,
+                    }
+                )
+
+    outdated: List[Dict[str, Any]] = []
+    for tile, products in products_by_tile.items():
+        products.sort(key=lambda p: p["acq_time"], reverse=True)
+        n_total = len(products)
+        if n_total > max_versions:
+            excess = products[max_versions:]
+            print(
+                f"  Tile {tile}: {n_total} products, "
+                f"keeping {max_versions} newest, removing {len(excess)}.",
+                flush=True,
+            )
+            outdated.extend(excess)
+        else:
+            print(
+                f"  Tile {tile}: {n_total} products (\u2264{max_versions}), keeping all.",
+                flush=True,
+            )
 
     return outdated
 
@@ -216,6 +303,7 @@ def cleanup_outputs(products: List[Dict[str, Any]], dry_run: bool = True) -> Non
         dp
         for dp in c.DIRS.values()
         if dp.startswith(os.path.join(c.DIRS["OUT"], "visual"))
+        and dp != c.DIRS["VIS_ROI"]
     ]
 
     for prod in products:
@@ -228,18 +316,26 @@ def cleanup_outputs(products: List[Dict[str, Any]], dry_run: bool = True) -> Non
 
 
 def cleanup_source_data(products: List[Dict[str, Any]], dry_run: bool = True) -> None:
-    """Removes source .SAFE directories from DIRS['DL']."""
+    """Removes source .SAFE and .SEN3 directories from DIRS['DL']."""
     action = "Dry-run: Checking" if dry_run else "Cleaning up"
-    print(f"{action} source .SAFE directories...", flush=True)
+    print(f"{action} source directories...", flush=True)
 
-    safe_dirs = [d for d in os.listdir(c.DIRS["DL"]) if d.endswith(".SAFE")]
+    dl = c.DIRS["DL"]
+    safe_dirs = [
+        d for d in os.listdir(dl) if d.endswith(".SAFE") or d.endswith(".SEN3")
+    ]
     removed_safes = 0
 
     for prod in products:
         base_name = prod["base_name"]
 
-        # S1 Logic
         s1_match = re.search(r"S1[AB]_.*_(\d{8}T\d{6})_(\d{8}T\d{6})", base_name)
+        s3_match = re.search(r"S3[AB]_.*_(\d{8}T\d{6})_", base_name) or re.search(
+            r"S3-(\d{8}T\d{6})Z-", base_name
+        )
+        s2_match = re.search(r"(\d{8}T\d{6})", base_name)
+
+        # S1 Logic
         if s1_match:
             start_t, end_t = s1_match.groups()
             for safe in safe_dirs:
@@ -248,16 +344,35 @@ def cleanup_source_data(products: List[Dict[str, Any]], dry_run: bool = True) ->
                     if os.path.exists(safe_path):
                         if dry_run:
                             print(
-                                f"[DRY-RUN] Would remove source S1: {safe}", flush=True
+                                f"[DRY-RUN] Would remove source S1: {safe}",
+                                flush=True,
                             )
                         else:
                             print(f"Removing source S1 product: {safe}", flush=True)
                             shutil.rmtree(safe_path)
                         removed_safes += 1
+                    break
 
-        # S2 Logic
-        s2_match = re.search(r"(\d{8}T\d{6})", base_name)
-        if s2_match:
+        # S3 Logic (must precede S2 catch-all)
+        elif s3_match:
+            time_str = s3_match.group(1)
+            for safe in safe_dirs:
+                if f"_{time_str}_" in safe and safe.endswith(".SEN3"):
+                    safe_path = os.path.join(c.DIRS["DL"], safe)
+                    if os.path.exists(safe_path):
+                        if dry_run:
+                            print(
+                                f"[DRY-RUN] Would remove source S3: {safe}",
+                                flush=True,
+                            )
+                        else:
+                            print(f"Removing source S3 product: {safe}", flush=True)
+                            shutil.rmtree(safe_path)
+                        removed_safes += 1
+                    break
+
+        # S2 Logic (catch-all for non-S1/S3 products)
+        elif s2_match:
             time_str = s2_match.group(1)
             for safe in safe_dirs:
                 if f"_{time_str}_" in safe:
@@ -265,15 +380,55 @@ def cleanup_source_data(products: List[Dict[str, Any]], dry_run: bool = True) ->
                     if os.path.exists(safe_path):
                         if dry_run:
                             print(
-                                f"[DRY-RUN] Would remove source S2: {safe}", flush=True
+                                f"[DRY-RUN] Would remove source S2: {safe}",
+                                flush=True,
                             )
                         else:
                             print(f"Removing source S2 product: {safe}", flush=True)
                             shutil.rmtree(safe_path)
                         removed_safes += 1
+                    break
 
     count_label = "Would remove" if dry_run else "Removed"
-    print(f"{count_label} {removed_safes} source .SAFE directories.", flush=True)
+    print(
+        f"{count_label} {removed_safes} source (.SAFE/.SEN3) directories.", flush=True
+    )
+
+
+def cleanup_all_source_data(dry_run: bool = True) -> None:
+    """Removes ALL source .SAFE and .SEN3 directories from DIRS['DL'].
+
+    Unlike cleanup_source_data(), this does not filter by a product list —
+    it removes every source directory it finds. Used by CLEANUP_RAW to
+    ensure no stale source directories linger from failed runs.
+    """
+    action = "Dry-run: Checking" if dry_run else "Cleaning up"
+    print(f"{action} ALL source directories...", flush=True)
+
+    dl = c.DIRS["DL"]
+    safe_dirs = [
+        d for d in os.listdir(dl) if d.endswith(".SAFE") or d.endswith(".SEN3")
+    ]
+    removed_safes = 0
+
+    for safe in safe_dirs:
+        safe_path = os.path.join(dl, safe)
+        if dry_run:
+            print(f"[DRY-RUN] Would remove source: {safe}", flush=True)
+            removed_safes += 1
+        else:
+            try:
+                print(f"Removing source: {safe}", flush=True)
+                shutil.rmtree(safe_path)
+                removed_safes += 1
+            except OSError as e:
+                print(f"Error removing {safe}: {e}", flush=True)
+
+    count_label = "Would remove" if dry_run else "Removed"
+    print(
+        f"{count_label} {removed_safes} source (.SAFE/.SEN3) directories.",
+        flush=True,
+    )
 
 
 def should_keep_entry(title: str, products: List[Dict[str, Any]]) -> bool:
@@ -281,16 +436,26 @@ def should_keep_entry(title: str, products: List[Dict[str, Any]]) -> bool:
     for prod in products:
         base_name = prod["base_name"]
 
-        # S1 title matches via timestamps
         s1_match = re.search(r"S1[AB]_.*_(\d{8}T\d{6})_(\d{8}T\d{6})", base_name)
+        s3_match = re.search(r"S3[AB]_.*_(\d{8}T\d{6})_", base_name) or re.search(
+            r"S3-(\d{8}T\d{6})Z-", base_name
+        )
+        s2_match = re.search(r"(\d{8}T\d{6})", base_name)
+
+        # S1 title matches via timestamps
         if s1_match:
             start_t, end_t = s1_match.groups()
             if f"_{start_t}_" in title and f"_{end_t}_" in title:
                 return False
 
-        # S2 title matches via timestamp
-        s2_match = re.search(r"(\d{8}T\d{6})", base_name)
-        if s2_match:
+        # S3 title matches via timestamp (before S2 catch-all)
+        elif s3_match:
+            time_str = s3_match.group(1)
+            if f"_{time_str}_" in title:
+                return False
+
+        # S2 title matches via timestamp (catch-all)
+        elif s2_match:
             time_str = s2_match.group(1)
             if f"_{time_str}_" in title:
                 return False
@@ -303,7 +468,7 @@ def cleanup_logs(products: List[Dict[str, Any]], dry_run: bool = True) -> None:
     action = "Dry-run: Checking" if dry_run else "Updating"
     print(f"{action} search logs...", flush=True)
 
-    for sat in ["s1", "s2"]:
+    for sat in ["s1", "s2", "s3"]:
         log_path = os.path.join(c.DIRS["DL"], f"{sat}_last.json")
         if not os.path.exists(log_path):
             continue
@@ -380,21 +545,174 @@ def cleanup_roi_outputs(days: int, dry_run: bool = True) -> None:
     print(f"{count_label} {removed_count} ROI files.", flush=True)
 
 
-def run_cleanup(days: int = 30, dry_run: bool = True) -> None:
-    """External entry point for cleanup function."""
+STALE_TMP_PATTERNS: List[str] = [
+    "vv_raw.tif",
+    "vh_raw.tif",
+    "vv.tif",
+    "vh.tif",
+    "s2_10m.tif",
+    "s2_20m.tif",
+    "s3_bt.tif",
+]
+
+
+def glob_remove(pattern: str, root: str, dry_run: bool = True) -> int:
+    """Recursively remove files matching a filename pattern under root."""
+    removed = 0
+    for dirpath, _, filenames in os.walk(root):
+        for fn in filenames:
+            if fn.endswith(pattern) or fn == pattern:
+                path = os.path.join(dirpath, fn)
+                if dry_run:
+                    print(f"  [DRY-RUN] Would remove {path}", flush=True)
+                else:
+                    try:
+                        os.remove(path)
+                        removed += 1
+                    except OSError as e:
+                        print(f"  Error removing {path}: {e}", flush=True)
+    if not dry_run:
+        return removed
+    return 0
+
+
+def cleanup_temp_files(dry_run: bool = True) -> None:
+    """
+    Removes known temporary/intermediate files left by interrupted pipeline runs.
+
+    Safe to call at any time — only deletes well-known temp patterns.
+    """
+    action = "Dry-run: Checking" if dry_run else "Cleaning up"
+    print(f"\n--- {action} stale temporary files ---", flush=True)
+    total = 0
+
+    # 1. Known /tmp/ intermediates by exact name
+    tmp_dir = "/tmp"
+    for name in STALE_TMP_PATTERNS:
+        path = os.path.join(tmp_dir, name)
+        if os.path.exists(path):
+            if dry_run:
+                print(f"  [DRY-RUN] Would remove {path}", flush=True)
+            else:
+                try:
+                    os.remove(path)
+                    total += 1
+                except OSError as e:
+                    print(f"  Error removing {path}: {e}", flush=True)
+
+    # 2. *.grid.tif GPU warp grids (anywhere under /tmp or output)
+    for root in [tmp_dir, c.DIRS["OUT"]]:
+        total += glob_remove(".grid.tif", root, dry_run)
+
+
+def run_cleanup(
+    days: int = 30,
+    dry_run: bool = True,
+    s1_days: Optional[int] = None,
+    s2_days: Optional[int] = None,
+    s3_days: Optional[int] = None,
+    fusion_days: Optional[int] = None,
+    s2_versions: Optional[int] = None,
+) -> None:
+    """External entry point for cleanup function.
+
+    Args:
+        days: Default age in days (fallback when no per-satellite override).
+        dry_run: If True, only list files without deleting.
+        s1_days: Override days for Sentinel-1 products (None = use `days`).
+        s2_days: Override days for Sentinel-2 products (None = use `days`).
+        s3_days: Override days for Sentinel-3 products (None = use `days`).
+        fusion_days: Override days for fusion products (None = use `days`).
+        s2_versions: If set, keep at most this many S2 products per grid tile,
+                     discarding older ones regardless of age. Overrides day-based
+                     S2 cleanup when set.
+    """
     mode = "DRY-RUN" if dry_run else "LIVE (FORCE)"
-    print(
-        f"--- Starting cleanup ({mode}) for products older than {days} days ---",
-        flush=True,
+
+    # Allow overriding ROI cleanup days via environment variable
+    roi_days = int(os.getenv("CLEANUP_ROI_DAYS", str(days)))
+
+    has_overrides = any(
+        x is not None for x in [s1_days, s2_days, s3_days, fusion_days, s2_versions]
     )
 
-    outdated_products_list = find_outdated_products(days)
+    if has_overrides:
+        print(
+            f"--- Starting cleanup ({mode}) ---",
+            flush=True,
+        )
+        s2_limit = (
+            f"{s2_versions}v"
+            if s2_versions is not None
+            else f"{s2_days if s2_days is not None else days}d"
+        )
+        print(
+            f"--- Cleanup limits: S1={s1_days if s1_days is not None else days}d, "
+            f"S2={s2_limit}, "
+            f"S3={s3_days if s3_days is not None else days}d, "
+            f"FUSION={fusion_days if fusion_days is not None else days}d, "
+            f"ROI={roi_days}d ---",
+            flush=True,
+        )
+        outdated_products_list = []
+        # S1 and S3: day-based
+        for prefix, sat_days in [
+            ("S1", s1_days if s1_days is not None else days),
+            ("S3", s3_days if s3_days is not None else days),
+        ]:
+            sat_products = find_outdated_products(sat_days, prefix=prefix)
+            if sat_products:
+                print(
+                    f"  Found {len(sat_products)} outdated {prefix} products "
+                    f"(>{sat_days} days).",
+                    flush=True,
+                )
+            outdated_products_list.extend(sat_products)
+
+        # S2: version-based or day-based
+        if s2_versions is not None:
+            s2_products = find_s2_excess_versions(s2_versions)
+            if s2_products:
+                print(
+                    f"  Found {len(s2_products)} outdated S2 products "
+                    f"(tile limit: {s2_versions}).",
+                    flush=True,
+                )
+        else:
+            s2_val = s2_days if s2_days is not None else days
+            s2_products = find_outdated_products(s2_val, prefix="S2")
+            if s2_products:
+                print(
+                    f"  Found {len(s2_products)} outdated S2 products "
+                    f"(>{s2_val} days).",
+                    flush=True,
+                )
+        outdated_products_list.extend(s2_products)
+
+        # Fusion: day-based by directory
+        f_days = fusion_days if fusion_days is not None else days
+        fusion_products = find_outdated_products(f_days, scan_dir="fused")
+        if fusion_products:
+            print(
+                f"  Found {len(fusion_products)} outdated FUSION products "
+                f"(>{f_days} days).",
+                flush=True,
+            )
+        outdated_products_list.extend(fusion_products)
+    else:
+        print(
+            f"--- Starting cleanup ({mode}) for products older than {days} days ---",
+            flush=True,
+        )
+        if roi_days != days:
+            print(f"--- ROI cleanup limit set to {roi_days} days ---", flush=True)
+        outdated_products_list = find_outdated_products(days)
 
     if not outdated_products_list:
         print("No outdated products found.", flush=True)
     else:
         cleanup_outputs(outdated_products_list, dry_run)
-        cleanup_roi_outputs(days, dry_run)
+        cleanup_roi_outputs(roi_days, dry_run)
         cleanup_source_data(outdated_products_list, dry_run)
         cleanup_logs(outdated_products_list, dry_run)
 

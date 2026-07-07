@@ -11,13 +11,17 @@
 
 """
 Maintenance utility to regenerate all .json sidecar files for existing visual TIFFs.
-Now delegates all identification and generation logic to metadata_engine.py.
+Preserves existing sidecar fields that cannot be derived from TIFF tags alone.
 """
 
+import json
 import os
 import metadata_engine
 import inventory_manager
 import constants as c
+
+# Fields that should be preserved from existing sidecar when TIFF tags are missing
+PRESERVE_FIELDS = {"satellite", "cloud_cover", "relative_orbit", "orbit_direction"}
 
 
 def rebuild_all():
@@ -25,18 +29,36 @@ def rebuild_all():
     visual_root = os.path.join(c.DIRS["OUT"], "visual")
     count = 0
 
-    # Walk through all visual subdirectories
     for root, _, files in os.walk(visual_root):
         for file in files:
             if file.endswith(".tif"):
                 tif_path = os.path.join(root, file)
+                json_path = tif_path.replace(".tif", ".json")
+
+                old_meta = {}
+                if os.path.exists(json_path):
+                    try:
+                        with open(json_path, "r", encoding="utf-8") as f:
+                            old_meta = json.load(f)
+                    except Exception:
+                        pass
 
                 try:
-                    # Engine now handles identification, legend mapping, 
-                    # resolution and timestamp extraction automatically.
                     metadata_engine.generate_sidecar(tif_path)
+
+                    if old_meta and os.path.exists(json_path):
+                        with open(json_path, "r", encoding="utf-8") as f:
+                            new_meta = json.load(f)
+                        changed = False
+                        for field in PRESERVE_FIELDS:
+                            if field in old_meta and field not in new_meta:
+                                new_meta[field] = old_meta[field]
+                                changed = True
+                        if changed:
+                            with open(json_path, "w", encoding="utf-8") as f:
+                                json.dump(new_meta, f, separators=(",", ":"))
                     count += 1
-                except Exception as e:  # pylint: disable=broad-exception-caught
+                except Exception as e:
                     print(
                         f"ERROR regenerating sidecar for {file}: {e}",
                         flush=True,

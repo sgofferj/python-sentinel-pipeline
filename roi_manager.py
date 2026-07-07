@@ -17,11 +17,15 @@ Supports both pipeline integration (new files only) and standalone (all files) m
 
 import argparse
 import json
+import math
 import os
+import tempfile
 from datetime import datetime, timezone
+from io import BytesIO
 from typing import Any, Dict, List, Tuple, Optional
 
 import pillow_heif  # type: ignore
+import requests  # type: ignore
 from atproto import Client, client_utils  # type: ignore
 from osgeo import gdal  # type: ignore
 from PIL import Image
@@ -57,11 +61,14 @@ def load_roi_config() -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
         return {}, []
 
 
-def calculate_coverage(roi_bbox_str: str, layer_list: List[Dict[str, Any]]) -> float:
+def calculate_coverage(
+    roi_bbox_str: str, layer_list: List[Dict[str, Any]], roi_poly: Optional[Any] = None
+) -> float:
     """Calculates the percentage of ROI covered by the union of multiple product footprints."""
     try:
-        west, south, east, north = map(float, roi_bbox_str.split(","))
-        roi_poly = box(west, south, east, north)
+        if roi_poly is None:
+            west, south, east, north = map(float, roi_bbox_str.split(","))
+            roi_poly = box(west, south, east, north)
 
         product_polys = []
         for layer in layer_list:
@@ -100,11 +107,25 @@ def crop_product(src_paths: List[str], dst_path: str, bbox_str: str) -> bool:
     """Crops one or more TIFF files to the specified WGS84 bounding box (mosaicing if needed)."""
     try:
         west, south, east, north = map(float, bbox_str.split(","))
+
+        # Check source bands to avoid 5-band TIFFs (GDAL adds alpha to existing alpha)
+        # We only take the RGB bands if it's a 4-band product, or 1 band if it's 2-band.
+        # This ensures dstAlpha produces a clean, standard 4-band or 2-band output.
+        src_bands = None
+        ds = gdal.Open(src_paths[0])
+        if ds:
+            if ds.RasterCount == 4:
+                src_bands = [1, 2, 3]
+            elif ds.RasterCount == 2:
+                src_bands = [1]
+            ds = None
+
         # Use gdal.Warp for cropping and mosaicing
         warp_options = gdal.WarpOptions(
             format="GTiff",
             outputBounds=[west, south, east, north],
             outputBoundsSRS="EPSG:4326",
+            srcBands=src_bands,
             creationOptions=["COMPRESS=DEFLATE", "TILED=YES", "BIGTIFF=YES"],
             dstAlpha=True,
         )
@@ -188,10 +209,12 @@ def create_full_image(src_path: str, base_dst_path: str) -> str:
 
 PRODUCT_NAMES = {
     "TCI": "True Color",
+    "TCI-GF": "True Color (Guided Filter)",
     "RATIO": "Radar Ratio (VV/VH)",
     "VV": "Radar VV",
     "VH": "Radar VH",
     "NIRFC": "False Color (NIR)",
+    "NIRFC-GF": "False Color (Guided Filter)",
     "NDVI": "NDVI (Vegetation Index)",
     "NDRE": "NDRE (Plant Stress)",
     "NDBI": "NDBI (Urban/Built-up)",
@@ -207,6 +230,181 @@ def get_human_name(product_type: str) -> str:
     """Converts a technical product type to a human-readable name."""
     suffix = product_type.split("-")[-1].upper()
     return PRODUCT_NAMES.get(suffix, suffix)
+
+
+BASEMAP_CACHE: str = os.path.join(c.BASE_DIR, "temp", "basemap_cache")
+BASEMAP_TILE_URL: str = (
+    "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile"
+)
+
+
+def _mercator(lon: float, lat: float) -> Tuple[float, float]:
+    """Convert lon/lat to EPSG:3857 meters."""
+    x = lon * 20037508.34 / 180.0
+    y = math.log(math.tan((90.0 + lat) * math.pi / 360.0)) / (math.pi / 180.0)
+    y = y * 20037508.34 / 180.0
+    return x, y
+
+
+def _lonlat_to_tile(lon: float, lat: float, zoom: int) -> Tuple[int, int]:
+    """Get XYZ tile (x,y) for given lon/lat at zoom level."""
+    lat_rad = math.radians(lat)
+    n = 2.0**zoom
+    x = int((lon + 180.0) / 360.0 * n)
+    y = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n)
+    return x, y
+
+
+def _tile_epsg3857_extent(
+    x: int, y: int, zoom: int
+) -> Tuple[float, float, float, float]:
+    """Return (x_min, y_min, x_max, y_max) in EPSG:3857 for tile (x,y) at zoom."""
+    n = 2.0**zoom
+    tile_m = 40075016.68 / n
+    x_min = -20037508.34 + x * tile_m
+    x_max = -20037508.34 + (x + 1) * tile_m
+    y_max = 20037508.34 - y * tile_m
+    y_min = 20037508.34 - (y + 1) * tile_m
+    return x_min, y_min, x_max, y_max
+
+
+def fetch_roi_basemap(roi_bbox_str: str, roi_name: str) -> Optional[str]:
+    """
+    Fetch and cache an ESRI satellite basemap covering the ROI.
+    Returns the path to the cached PNG, or None on failure.
+    """
+    cache_dir = os.path.join(BASEMAP_CACHE, roi_name)
+    cache_path = os.path.join(cache_dir, "basemap.png")
+    if os.path.exists(cache_path):
+        return cache_path
+
+    west, south, east, north = map(float, roi_bbox_str.split(","))
+    roi_w, roi_s = _mercator(west, south)
+    roi_e, roi_n = _mercator(east, north)
+
+    # Pick zoom so the ROI fits in at most ~6 tiles
+    zoom = 12
+    for z in range(14, 8, -1):
+        x0, y0 = _lonlat_to_tile(west, north, z)
+        x1, y1 = _lonlat_to_tile(east, south, z)
+        if (x1 - x0 + 1) * (y1 - y0 + 1) <= 6:
+            zoom = z
+            break
+
+    x0, y0 = _lonlat_to_tile(west, north, zoom)
+    x1, y1 = _lonlat_to_tile(east, south, zoom)
+
+    tile_m = 40075016.68 / (2.0**zoom)
+    tile_px = 256
+
+    cols = x1 - x0 + 1
+    rows = y1 - y0 + 1
+    mosaic = Image.new("RGB", (cols * tile_px, rows * tile_px))
+
+    session = requests.Session()
+    for dx in range(cols):
+        for dy in range(rows):
+            tx = x0 + dx
+            ty = y0 + dy
+            url = f"{BASEMAP_TILE_URL}/{zoom}/{ty}/{tx}.png"
+            try:
+                resp = session.get(url, timeout=10)
+                if resp.status_code == 200:
+                    tile_img = Image.open(BytesIO(resp.content)).convert("RGB")
+                    mosaic.paste(tile_img, (dx * tile_px, dy * tile_px))
+            except Exception:
+                continue
+
+    # Crop mosaic to exact ROI extent in EPSG:3857 pixel coordinates
+    origin_x = -20037508.34 + x0 * tile_m
+    origin_y = 20037508.34 - y0 * tile_m
+
+    px = int((roi_w - origin_x) / tile_m * tile_px)
+    py = int((origin_y - roi_n) / tile_m * tile_px)
+    pw = int((roi_e - roi_w) / tile_m * tile_px)
+    ph = int((roi_n - roi_s) / tile_m * tile_px)
+
+    if pw > 0 and ph > 0:
+        mosaic = mosaic.crop((px, py, px + pw, py + ph))
+
+    os.makedirs(cache_dir, exist_ok=True)
+    mosaic.save(cache_path)
+    return cache_path
+
+
+def _composite_thermal(basemap_path: str, thermal_path: str, output_path: str) -> str:
+    """Overlay RGBA thermal crop on basemap with attribution text."""
+    basemap = Image.open(basemap_path).convert("RGBA")
+    thermal = Image.open(thermal_path).convert("RGBA")
+    basemap = basemap.resize(thermal.size, Image.LANCZOS)
+    comp = Image.alpha_composite(basemap, thermal)
+    comp = comp.convert("RGB")
+
+    w, h = comp.size
+    bar_h = max(int(h * 0.025), 14)
+    overlay = Image.new("RGBA", (w, bar_h), (0, 0, 0, 140))
+    comp.paste(overlay, (0, h - bar_h), overlay)
+
+    from PIL import ImageDraw
+
+    draw = ImageDraw.Draw(comp)
+    text = "Basemap (C) ESRI, made with material from Copernicus Sentinel"
+    font_size = max(int(bar_h * 0.55), 8)
+    try:
+        from PIL import ImageFont
+
+        font = ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", font_size
+        )
+    except Exception:
+        font = ImageFont.load_default()
+    _, _, tw, th = draw.textbbox((0, 0), text, font=font)
+    tx = (w - tw) // 2
+    ty = h - bar_h + (bar_h - th) // 2
+    draw.text((tx, ty), text, fill=(200, 200, 200), font=font)
+
+    comp.save(output_path, "PNG")
+    return output_path
+
+
+def check_thermal_anomaly(
+    ana_src_paths: List[str],
+    roi_bbox_str: str,
+    roi_name: str,
+    base_acq_time: str,
+    threshold_kelvin: float,
+    apprise_url: str,
+) -> bool:
+    """Crop analtic S3 BT to ROI, check max BT against threshold, send Apprise alert."""
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".tif")
+    os.close(tmp_fd)
+    try:
+        if not crop_product(ana_src_paths, tmp_path, roi_bbox_str):
+            return False
+        ds = gdal.Open(tmp_path)
+        if not ds:
+            return False
+        band = ds.GetRasterBand(1)
+        stats = band.GetStatistics(True, True)
+        ds = None
+        max_temp = stats[1]
+        if max_temp > threshold_kelvin:
+            msg = (
+                f"Thermal anomaly detected at {roi_name}\n"
+                f"Max temperature: {max_temp:.1f}K ({max_temp - 273.15:.1f}C)\n"
+                f"Threshold: {threshold_kelvin:.1f}K\n"
+                f"Acquired: {base_acq_time}"
+            )
+            notify.send_notification(
+                message=msg,
+                title=f"Thermal Alert: {roi_name}",
+                urls=apprise_url,
+            )
+            return True
+        return False
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 def post_to_bsky(
@@ -374,6 +572,12 @@ def run_roi_stage(process_all: bool = False) -> int:
         func.perf_logger.end_step()
         return 0
 
+    # Sort groups by acquisition time (oldest first) to ensure chronological processing
+    # (i.e. oldest events are processed and posted first)
+    groups_to_process.sort(
+        key=lambda x: min(l.get("acquisition_time", "9999") for l in x[1])
+    )
+
     print(
         f"Checking {len(groups_to_process)} product groups against {len(rois)} ROIs.",
         flush=True,
@@ -431,12 +635,47 @@ def run_roi_stage(process_all: bool = False) -> int:
                 if dp_norm in pt_norm:
                     match_found = True
                     break
+                # Normalize hyphens/underscores for GF variants (e.g., "TCI-GF" vs "S2-TCI_GF")
+                dp_norm2 = dp_up.replace("-", "_")
+                pt_norm2 = pt_up.replace("-", "_")
+                if dp_norm2 in pt_norm2:
+                    match_found = True
+                    break
 
             if not match_found:
                 continue
 
-            coverage = calculate_coverage(roi_bbox, layers)
-            if coverage >= roi_match_threshold:
+            # Optimization: Check if any single tile in the group satisfies the ROI
+            west, south, east, north = map(float, roi_bbox.split(","))
+            roi_poly = box(west, south, east, north)
+
+            best_src_paths = None
+            effective_coverage = 0.0
+
+            # Find best single tile coverage first
+            max_single_coverage = 0.0
+            best_single_layer = None
+            for layer in layers:
+                cov = calculate_coverage(roi_bbox, [layer], roi_poly=roi_poly)
+                if cov > max_single_coverage:
+                    max_single_coverage = cov
+                    best_single_layer = layer
+
+            if max_single_coverage >= roi_match_threshold and best_single_layer:
+                best_src_paths = [
+                    os.path.join(c.DIRS["OUT"], best_single_layer["path"])
+                ]
+                effective_coverage = max_single_coverage
+            else:
+                # If no single tile fits, check combined coverage
+                combined_coverage = calculate_coverage(
+                    roi_bbox, layers, roi_poly=roi_poly
+                )
+                if combined_coverage >= roi_match_threshold:
+                    best_src_paths = src_paths
+                    effective_coverage = combined_coverage
+
+            if best_src_paths:
                 # Use full product type (excluding sensor prefix)
                 p_suffix = (
                     product_type.split("-", 1)[1]
@@ -448,26 +687,75 @@ def run_roi_stage(process_all: bool = False) -> int:
                 dst_path = os.path.join(c.DIRS["VIS_ROI"], dst_filename)
 
                 print(
-                    f"ROI Match: {roi_name} ({coverage:.1f}%) -> "
-                    f"Cropping {dst_filename} ({len(src_paths)} tiles)",
+                    f"ROI Match: {roi_name} ({effective_coverage:.1f}%) -> "
+                    f"Cropping {dst_filename} ({len(best_src_paths)} tiles)",
                     flush=True,
                 )
-                if not crop_product(src_paths, dst_path, roi_bbox):
+                if not crop_product(best_src_paths, dst_path, roi_bbox):
                     continue
 
                 # Generate sidecar for the new crop
+                sat_val = layers[0].get("satellite")
                 meta.generate_sidecar(
                     dst_path,
                     f"ROI-{roi_name}-{p_suffix}",
                     product_type,
                     effective_res=resolution,
                     cloud_cover=avg_cloud_cover,
+                    relative_orbit=rel_orbit,
+                    orbit_direction=orbit_dir,
+                    satellite=sat_val,
                 )
                 crops_created += 1
+
+                # Thermal monitoring: check S3-BT analytic data for hot spots
+                thermal_alert = False
+                thermal_checked = False
+                if product_type.startswith("S3-"):
+                    thermal_enabled = roi.get("thermal_monitor", False)
+                    if thermal_enabled:
+                        thermal_checked = True
+                        threshold = roi.get("thermal_threshold", 310.0)
+                        ana_src = [
+                            p.replace("/visual/", "/analytic/") for p in best_src_paths
+                        ]
+                        ana_src = [p for p in ana_src if os.path.exists(p)]
+                        if ana_src:
+                            thermal_alert = check_thermal_anomaly(
+                                ana_src,
+                                roi_bbox,
+                                roi_name,
+                                base_acq_time,
+                                threshold,
+                                roi.get("apprise_url", ""),
+                            )
+
+                # Delete all-transparent FIRE crops when no thermal anomaly
+                if "FIRE" in product_type and thermal_checked and not thermal_alert:
+                    os.remove(dst_path)
+                    json_path = dst_path.replace(".tif", ".json")
+                    if os.path.exists(json_path):
+                        os.remove(json_path)
+                    crops_created -= 1
 
                 # Apprise and Bluesky posting
                 apprise_url = roi.get("apprise_url", "")
                 social_needed = bsky_post_enabled and roi_name_raw in bsky_roi_names
+
+                # Skip image posts for S3 thermal products unless anomaly detected
+                if product_type.startswith("S3-") and not thermal_alert:
+                    apprise_url = ""
+                    social_needed = False
+
+                # Composite thermal crop on basemap for anomaly posts
+                post_path = dst_path
+                if thermal_alert and product_type.startswith("S3-"):
+                    basemap_path = fetch_roi_basemap(roi_bbox, roi_name)
+                    if basemap_path:
+                        comp_path = dst_path.replace(".tif", "_comp.png")
+                        post_path = _composite_thermal(
+                            basemap_path, dst_path, comp_path
+                        )
 
                 social_base = os.path.join(
                     c.DIRS["VIS_ROI"],
@@ -476,7 +764,7 @@ def run_roi_stage(process_all: bool = False) -> int:
 
                 # Apprise gets full size JPEG
                 if apprise_url:
-                    full_image = create_full_image(dst_path, social_base)
+                    full_image = create_full_image(post_path, social_base)
                     if full_image:
                         human_prod = get_human_name(product_type)
                         msg = (
@@ -493,7 +781,7 @@ def run_roi_stage(process_all: bool = False) -> int:
 
                 # Bluesky gets downscaled social image
                 if social_needed:
-                    image_path = create_social_image(dst_path, social_base)
+                    image_path = create_social_image(post_path, social_base)
                     if image_path:
                         post_to_bsky(
                             config,
