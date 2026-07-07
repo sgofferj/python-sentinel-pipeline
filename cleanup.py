@@ -21,7 +21,7 @@ import os
 import re
 import shutil
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import constants as c
 import inventory_manager
@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--prune-outside-search",
         action="store_true",
-        help="Also remove products whose footprint falls outside all current search boxes (S1_BOX/S2_BOX/S3_BOX in .env)",
+        help="Remove products outside current search boxes (S1_BOX/S2_BOX/S3_BOX in .env)",
     )
     return parser.parse_args()
 
@@ -691,6 +691,20 @@ def cleanup_temp_files(dry_run: bool = True) -> None:
     for name in STALE_TMP_PATTERNS:
         path = os.path.join(tmp_dir, name)
         if os.path.exists(path):
+            if dry_run:
+                print(f"  [DRY-RUN] Would remove {path}", flush=True)
+            else:
+                try:
+                    os.remove(path)
+                    total += 1
+                except OSError as e:
+                    print(f"  Error removing {path}: {e}", flush=True)
+
+    # 2. *.grid.tif GPU warp grids (anywhere under /tmp or output)
+    for root in [tmp_dir, c.DIRS["OUT"]]:
+        total += glob_remove(".grid.tif", root, dry_run)
+
+
 def run_cleanup(
     days: int = 30,
     dry_run: bool = True,
@@ -809,7 +823,6 @@ def run_cleanup(
                 flush=True,
             )
 
-
     if not outdated_products_list:
         print("No outdated products found.", flush=True)
     else:
@@ -844,8 +857,12 @@ def main() -> None:
     s1_days: Optional[int] = int(v) if (v := os.getenv("CLEANUP_S1_DAYS")) else None
     s2_days: Optional[int] = int(v) if (v := os.getenv("CLEANUP_S2_DAYS")) else None
     s3_days: Optional[int] = int(v) if (v := os.getenv("CLEANUP_S3_DAYS")) else None
-    fusion_days: Optional[int] = (int(v) if (v := os.getenv("CLEANUP_FUSION_DAYS")) else None)
-    s2_versions: Optional[int] = (int(v) if (v := os.getenv("CLEANUP_S2_VERSIONS")) else None)
+    fusion_days: Optional[int] = (
+        int(v) if (v := os.getenv("CLEANUP_FUSION_DAYS")) else None
+    )
+    s2_versions: Optional[int] = (
+        int(v) if (v := os.getenv("CLEANUP_S2_VERSIONS")) else None
+    )
 
     run_cleanup(
         days=args.days,
