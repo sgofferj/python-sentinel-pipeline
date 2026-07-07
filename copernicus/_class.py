@@ -157,6 +157,13 @@ class connect:  # pylint: disable=invalid-name
             for b in boxes:
                 try:
                     coords: List[str] = b.split(",")
+                    if len(coords) < 4:
+                        print(
+                            f"WARNING: Invalid box '{b}' — expected 4 comma-separated values, "
+                            f"got {len(coords)}. Skipping this box.",
+                            flush=True,
+                        )
+                        continue
                     # OData Intersects needs SRID=4326 prefix and unquoted geography literal
                     wkt: str = (
                         f"POLYGON(({coords[0]} {coords[1]},{coords[2]} {coords[1]},"
@@ -166,8 +173,19 @@ class connect:  # pylint: disable=invalid-name
                     spatial_filters.append(
                         f"OData.CSC.Intersects(area=geography'SRID=4326;{wkt}')"
                     )
-                except Exception:  # pylint: disable=broad-exception-caught
-                    pass
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    print(
+                        f"WARNING: Failed to parse box '{b}': {e}. Skipping this box.",
+                        flush=True,
+                    )
+                    continue
+            if not spatial_filters:
+                print(
+                    "ERROR: No valid spatial filters after processing all boxes. "
+                    "Cannot perform unfiltered search. Returning empty result.",
+                    flush=True,
+                )
+                return 400, {"features": []}
         elif geometry:
             spatial_filters.append(
                 f"OData.CSC.Intersects(area=geography'SRID=4326;{geometry}')"

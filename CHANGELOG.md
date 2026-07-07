@@ -4,6 +4,12 @@ All notable changes since 01MAR2026.
 
 ---
 
+## 2026-07-07 — Box-Parse Hardening & S2 BBOX Config Fix
+
+### Fixed
+- **Global S2 search on malformed box** (`copernicus/_class.py`): `productSearch()` silently dropped spatial filters when a box string failed to parse (e.g. `,`-split producing <4 coords), causing the OData query to run without any spatial constraint — returning Sentinel-2 products from the entire globe. Now validates `len(coords) >= 4` explicitly, warns on invalid boxes, and returns `400` with empty results if no valid spatial filters remain.
+- **`S2_BOX` env var typo** (`.env`): `{BOX_home}` was missing the `$` prefix, preventing expansion to `BOX_home` coordinates. Fixed to `${BOX_home}`.
+
 ## 2026-07-07 — Per-Satellite Cleanup TTL, --shutdown Flag, CLEANUP_RAW Rework & S2 Versions
 
 ### Added
