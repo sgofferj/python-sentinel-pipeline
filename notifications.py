@@ -47,10 +47,14 @@ def send_notification(
             # AppriseAttachment can take a file path
             attach = apprise.AppriseAttachment(attachment)
 
-        apobj.notify(
+        success = apobj.notify(
             body=message,
             title=title,
             attach=attach,
         )
+        if success:
+            print("Notification sent successfully.", flush=True)
+        else:
+            print("Notification FAILED — check Apprise URL or server connectivity.", flush=True)
     else:
         print("Warning: No valid Apprise URLs found.", flush=True)

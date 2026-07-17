@@ -228,8 +228,15 @@ PRODUCT_NAMES = {
 
 def get_human_name(product_type: str) -> str:
     """Converts a technical product type to a human-readable name."""
-    suffix = product_type.split("-")[-1].upper()
-    return PRODUCT_NAMES.get(suffix, suffix)
+    # Strip sensor prefix (e.g. "S2-TCI-GF" → "TCI-GF")
+    rest = product_type.split("-", 1)[1] if "-" in product_type else product_type
+    parts = rest.split("-")
+    # Try progressively shorter suffixes: "TCI-GF", then "GF"
+    for i in range(len(parts)):
+        candidate = "-".join(parts[i:]).upper()
+        if candidate in PRODUCT_NAMES:
+            return PRODUCT_NAMES[candidate]
+    return rest
 
 
 BASEMAP_CACHE: str = os.path.join(c.BASE_DIR, "temp", "basemap_cache")

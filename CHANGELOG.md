@@ -4,6 +4,26 @@ All notable changes since 01MAR2026.
 
 ---
 
+## 2026-07-17 — Apprise Logging, ROI Human Names & Translation QA
+
+### Fixed
+- **Apprise silent failures logged** (`notifications.py`): `send_notification()` now captures Apprise's `notify()` return value and prints success/failure — previously a failing notification (e.g. untrusted Signal identity) produced no output.
+- **ROI notification product names** (`roi_manager.py`): `get_human_name()` now tries progressively longer suffix matches (e.g. `"TCI-GF"` before `"GF"`), so Apprise messages show "True Color (Guided Filter)" instead of just "GF".
+- **Viewer ROI labels** (`viewer/js/translations.js`): Added `TCI-GF` and `NIRFC-GF` to PRODUCT_TRANSLATIONS in all 4 languages. ROI crops no longer display as bare "GF" in the layer picker.
+
+### Changed
+- **Translation QA** (`viewer/js/translations.js`): Fixed multiple incorrect or unnatural translations across Finnish, Swedish, and German:
+  - fi: removed redundant "SAR tutka", fixed "NIR-värivääräkuva" → "NIR-väärävärikuva", cleaned VV/VH polarisation subtitles, removed dual-option pipe in NBR, aligned AIS correlation subtitles with English
+  - sv: fixed mixed-language bug "biomassa **ja**" → "biomassa **och**", corrected "krysspolarisation" → "korspolarisation", fixed "Fartygshistorik" → "Fartygskorrelation" to match English
+  - de: translated FUSED subtitle from English to German, added missing hyphen in "Vertikal-Horizontal-Kreuzpolarisation"
+
+---
+# Changelog
+
+All notable changes since 01MAR2026.
+
+---
+
 ## 2026-07-07 — Box-Parse Hardening & S2 BBOX Config Fix
 
 ### Fixed
