@@ -753,6 +753,10 @@ def run_roi_stage(process_all: bool = False) -> int:
                 if product_type.startswith("S3-") and not thermal_alert:
                     apprise_url = ""
                     social_needed = False
+                    func.perf_logger.log_info(
+                        f"Skipping Apprise/Bluesky for {roi_name} {product_type}: "
+                        "no thermal anomaly detected"
+                    )
 
                 # Composite thermal crop on basemap for anomaly posts
                 post_path = dst_path
@@ -771,6 +775,9 @@ def run_roi_stage(process_all: bool = False) -> int:
 
                 # Apprise gets full size JPEG
                 if apprise_url:
+                    func.perf_logger.log_info(
+                        f"Creating full-size JPEG for {roi_name} {p_suffix}"
+                    )
                     full_image = create_full_image(post_path, social_base)
                     if full_image:
                         human_prod = get_human_name(product_type)
@@ -779,11 +786,18 @@ def run_roi_stage(process_all: bool = False) -> int:
                             f"Acquired: {base_acq_time}\n"
                             f"Satellite: {constellation}"
                         )
+                        func.perf_logger.log_info(
+                            f"Sending Apprise notification for {roi_name} {p_suffix}"
+                        )
                         notify.send_notification(
                             message=msg,
                             title=f"ROI Update: {roi_name}",
                             urls=apprise_url,
                             attachment=full_image,
+                        )
+                    else:
+                        func.perf_logger.log_info(
+                            f"Failed to create full-size JPEG for {roi_name} {p_suffix}"
                         )
 
                 # Bluesky gets downscaled social image

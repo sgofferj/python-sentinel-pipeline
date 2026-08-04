@@ -4,6 +4,17 @@ All notable changes since 01MAR2026.
 
 ---
 
+## 2026-07-30 — Notification Delivery Logging & Re-send Tool
+
+### Added
+- **`notify_roi.py`**: standalone tool to re-send notifications for a specific ROI from existing crops — scans the ROI output directory, rebuilds the message from sidecar metadata, regenerates the JPEG if needed, and sends. Supports `--dry-run` and `--list`.
+
+### Changed
+- **`notifications.py`**: `send_notification()` now writes Apprise delivery results (target count, success/failure, skipped, missing attachment) to the pipeline log, and wraps the `notify()` call in `try/except` so unexpected Apprise exceptions are logged as failures instead of crashing the pipeline.
+- **`roi_manager.py`**: ROI-stage notification decisions (JPEG creation, thermal-monitor skip, send) are logged via the performance logger.
+
+---
+
 ## 2026-07-17 — Apprise Logging, ROI Human Names & Translation QA
 
 ### Fixed
