@@ -752,9 +752,26 @@ def run_roi_stage(
                     flush=True,
                 )
                 if dry_run:
+                    detail = "crop and sidecar"
+                    if product_type.startswith("S3-"):
+                        if roi.get("thermal_monitor", False):
+                            detail += (
+                                ", thermal anomaly check "
+                                "(notifications only if anomaly detected)"
+                            )
+                        else:
+                            detail += (
+                                ", no notifications "
+                                "(S3 products skip posting unless thermal "
+                                "monitoring is enabled)"
+                            )
+                    else:
+                        detail += (
+                            ", notifications "
+                            "(Apprise/Bluesky per ROI config)"
+                        )
                     print(
-                        f"  [dry-run] would crop {dst_filename}, generate sidecar, "
-                        "and send notifications (thermal check for S3 products)",
+                        f"  [dry-run] would {detail} for {dst_filename}",
                         flush=True,
                     )
                     continue
