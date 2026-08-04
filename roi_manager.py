@@ -490,11 +490,27 @@ def post_to_bsky(
         return False
 
 
-def run_roi_stage(process_all: bool = False) -> int:
+def run_roi_stage(
+    process_all: bool = False,
+    roi_filter: Optional[str] = None,
+    date_filter: Optional[str] = None,
+    dry_run: bool = False,
+) -> int:
     """
     Main entry point for the ROI stage.
     Groups inventory by acquisition time and product type to handle multi-tile orbits.
     Scans the inventory and processes ROI crops and social posts.
+
+    Args:
+        process_all: process every group in the inventory instead of only
+            groups rendered since this run started.
+        roi_filter: restrict processing to a single ROI (name from
+            roi_config.json, case-insensitive, '_' treated as space).
+        date_filter: restrict processing to acquisitions from this date
+            (YYYY-MM-DD). Matching groups are processed even if they were
+            not just rendered (re-run of a specific acquisition date).
+        dry_run: print what would be done without writing crops, sidecars,
+            or sending notifications/posts.
     """
     func.perf_logger.start_step("ROI Cropping Stage")
 
@@ -503,6 +519,29 @@ def run_roi_stage(process_all: bool = False) -> int:
         print("No ROI configurations found. Skipping.", flush=True)
         func.perf_logger.end_step()
         return 0
+
+    if roi_filter:
+        target = roi_filter.strip().replace("_", " ").lower()
+        matched = []
+        for r in rois:
+            name = func.resolve_env_variable(r.get("name", "ROI")).replace("_", " ")
+            if name.lower() == target:
+                matched.append(r)
+        if not matched:
+            available = ", ".join(
+                func.resolve_env_variable(r.get("name", "ROI")) for r in rois
+            )
+            print(
+                f"No ROI matching '{roi_filter}'. Available ROIs: {available}",
+                flush=True,
+            )
+            func.perf_logger.end_step()
+            return 0
+        rois = matched
+        print(
+            f"Restricting ROI processing to: {matched[0]['name']}",
+            flush=True,
+        )
 
     inventory_path = os.path.join(c.DIRS["OUT"], "visual/inventory.json")
     if not os.path.exists(inventory_path):
@@ -554,7 +593,15 @@ def run_roi_stage(process_all: bool = False) -> int:
     run_start_dt = datetime.fromtimestamp(func.perf_logger.start_time, tz=timezone.utc)
 
     for key, layers in grouped_layers.items():
-        if process_all:
+        # Restrict to the requested acquisition date. Uses the layer's
+        # acquisition_time (works whether the group key is date+orbit or a
+        # full timestamp when orbit info is missing).
+        if date_filter:
+            group_date = layers[0].get("acquisition_time", "")[:10]
+            if group_date != date_filter:
+                continue
+
+        if process_all or date_filter:
             groups_to_process.append((key, layers))
         else:
             is_dirty = False
@@ -575,7 +622,13 @@ def run_roi_stage(process_all: bool = False) -> int:
                 groups_to_process.append((key, layers))
 
     if not groups_to_process:
-        print("No new products found for ROI processing.", flush=True)
+        if date_filter:
+            print(
+                f"No products found for acquisition date {date_filter}.",
+                flush=True,
+            )
+        else:
+            print("No new products found for ROI processing.", flush=True)
         func.perf_logger.end_step()
         return 0
 
@@ -698,6 +751,13 @@ def run_roi_stage(process_all: bool = False) -> int:
                     f"Cropping {dst_filename} ({len(best_src_paths)} tiles)",
                     flush=True,
                 )
+                if dry_run:
+                    print(
+                        f"  [dry-run] would crop {dst_filename}, generate sidecar, "
+                        "and send notifications (thermal check for S3 products)",
+                        flush=True,
+                    )
+                    continue
                 if not crop_product(best_src_paths, dst_path, roi_bbox):
                     continue
 
@@ -826,9 +886,40 @@ if __name__ == "__main__":
     parser.add_argument(
         "--all", action="store_true", help="Process all files in the inventory"
     )
+    parser.add_argument(
+        "--roi",
+        type=str,
+        default=None,
+        help="Only process this ROI (name from roi_config.json, case-insensitive)",
+    )
+    parser.add_argument(
+        "--date",
+        type=str,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Only process acquisitions from this date; re-runs the ROI stage "
+        "for that date even if it was already processed",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print intended actions without writing crops or sending "
+        "notifications/posts",
+    )
     args = parser.parse_args()
+
+    if args.date:
+        try:
+            datetime.strptime(args.date, "%Y-%m-%d")
+        except ValueError:
+            parser.error(f"--date must be YYYY-MM-DD, got '{args.date}'")
 
     # Start performance logger for standalone run
     func.perf_logger.start_run()
-    run_roi_stage(process_all=args.all)
+    run_roi_stage(
+        process_all=args.all,
+        roi_filter=args.roi,
+        date_filter=args.date,
+        dry_run=args.dry_run,
+    )
     func.perf_logger.stop_run()

@@ -4,6 +4,17 @@ All notable changes since 01MAR2026.
 
 ---
 
+## 2026-08-04 — ROI Manager Re-run & CLI Options
+
+### Added
+- **`roi_manager.py`** new CLI options:
+  - `--roi <NAME>` — restrict processing to a single ROI (case-insensitive).
+  - `--date YYYY-MM-DD` — re-run the ROI stage against a specific acquisition date; matching groups are processed even if already rendered.
+  - `--dry-run` — print what would be cropped/sent without writing crops or notifications.
+  - `-h` / `--help` — usage listing all options.
+
+---
+
 ## 2026-07-30 — Notification Delivery Logging & Re-send Tool
 
 ### Added

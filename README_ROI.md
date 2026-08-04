@@ -34,6 +34,12 @@ python roi_manager.py
 
 # Process ALL historical products in the inventory (WARNING: Triggers notifications/posts)
 python roi_manager.py --all
+
+# Re-run a single ROI against a specific acquisition date (re-crops and re-notifies)
+python roi_manager.py --roi <NAME> --date YYYY-MM-DD
+
+# Preview what a re-run would do without cropping or sending anything
+python roi_manager.py --roi <NAME> --date YYYY-MM-DD --dry-run
 ```
 
 ---
