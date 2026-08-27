@@ -4,6 +4,26 @@ All notable changes since 01MAR2026.
 
 ---
 
+## 2026-08-27 — AP-GF SWIR Super-Resolution (Synthetic Pan Guided Filter)
+
+### Added
+- **AP-GF product** (`functions_s2.py`): super-resolves 20m SWIR bands (B11/B12) to 10m before AP composite (`R=sharpened B12`, `G=sharpened B11`, `B=native B08`) using Kaiming He guided filter with a synthetic panchromatic guide `G = 0.1·B02 + 0.1·B03 + 0.4·B04 + 0.4·B08`. Prevents single-band NIR halo in dense vegetation where NIR/SWIR are negatively correlated. Enabled via `AP-GF` in `S2_PROCESSES`.
+  - CPU path via `scipy.ndimage.uniform_filter`, GPU via `cupyx.scipy.ndimage.uniform_filter` (auto `HAS_CUDA`).
+  - Edge padding (`edge` mode, `radius` pixels) eliminates block seams in `2048×2048` tiled renderer.
+  - Detail enhancement `output = base + strength·detail` (shared `GF_DETAIL_STRENGTH` semantics, `-1`=base only).
+- **New constants** (`constants.py`): `VIS_S2_AP_GF`, `GF_AP_RADIUS` (defaults to `GF_RADIUS`), `GF_AP_EPSILON` (default `0.005`), `GF_AP_DETAIL_STRENGTH`, `GF_AP_W_B02/B03/B04/B08` (auto-normalised to sum 1.0).
+- **Metadata** (`metadata_engine.py`): `RES_MAP["S2-AP-GF"]=10.0` (sharpened vs 20m `S2-AP`).
+- **Legends** (`legends.py`): `S2-AP-GF` sharpened SWIR composite legend.
+- **Viewer** (`viewer/js/app.js`, `viewer/js/translations.js`): `S2_PRIORITY` includes `TCI-GF/NIRFC-GF/AP-GF`, `AP-GF` i18n in fi/sv/en/de.
+- **ROI** (`roi_manager.py`, `notify_roi.py`): `PRODUCT_NAMES["AP-GF"]` + human-name fix for bare `AP-GF` (previously returned `GF`).
+
+### Changed
+- **.env.example**: documents `AP-GF` and `GF_AP_*` tuning (`GF_AP_W_*`, `GF_AP_RADIUS/EPSILON`).
+- **README.md**: `S2_PROCESSES` and Guided Filter tables updated, specialty product blurb for AP-GF.
+- **functions_s2.py**: `_render_internal` now handles `AP_GF_VIS` alongside `TCI_GF/NIRFC_GF`; `run_pipeline` lists `AP_GF` in product loop (10 m effective resolution).
+
+---
+
 ## 2026-08-04 — ROI Manager Re-run & CLI Options
 
 ### Added
