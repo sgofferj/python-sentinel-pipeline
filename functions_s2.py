@@ -282,6 +282,73 @@ def _apply_guided_filter_rgb(
     return output
 
 
+def _build_synthetic_pan(
+    s_b02: np.ndarray,
+    s_b03: np.ndarray,
+    s_b04: np.ndarray,
+    s_b08: np.ndarray,
+) -> np.ndarray:
+    """Build synthetic 10m panchromatic guide for SWIR sharpening.
+
+    G = w_B02*B02 + w_B03*B03 + w_B04*B04 + w_B08*B08  (weights from constants).
+    Inputs are uint8 0-255 scaled bands; output is uint8 0-255.
+    Avoids single-band NIR halos: NIR (B08) is negatively correlated with SWIR
+    in dense vegetation, so a balanced pan preserves urban/bare-soil edges while
+    suppressing veg SWIR bleeding.
+    """
+    w_b02 = c.GF_AP_W_B02
+    w_b03 = c.GF_AP_W_B03
+    w_b04 = c.GF_AP_W_B04
+    w_b08 = c.GF_AP_W_B08
+    # Normalise weights to sum 1 if caller misconfigured, preserving brightness.
+    w_sum = w_b02 + w_b03 + w_b04 + w_b08
+    if w_sum != 0 and abs(w_sum - 1.0) > 1e-6:
+        w_b02 /= w_sum
+        w_b03 /= w_sum
+        w_b04 /= w_sum
+        w_b08 /= w_sum
+    pan = (
+        w_b02 * s_b02.astype(np.float32)
+        + w_b03 * s_b03.astype(np.float32)
+        + w_b04 * s_b04.astype(np.float32)
+        + w_b08 * s_b08.astype(np.float32)
+    )
+    return np.clip(pan, 0, 255).astype(np.uint8)
+
+
+def _apply_guided_filter_single(
+    guide_u8: np.ndarray,
+    src_u8: np.ndarray,
+    radius: int = 2,
+    eps: float = 0.005,
+    detail_strength: float = 2.0,
+) -> np.ndarray:
+    """Sharpen a single SWIR band using a synthetic pan guide.
+
+    Both arrays are uint8 HxW at 10m; filtering is done in 0-1 float domain
+    with edge-padding to avoid block seams, matching RGB path.
+    Returns sharpened uint8 band.
+    """
+    h, w = src_u8.shape
+    guide_f = guide_u8.astype(np.float32) / 255.0
+    src_f = src_u8.astype(np.float32) / 255.0
+    pad = radius
+    guide_pad = np.pad(guide_f, pad, mode="edge")
+    src_pad = np.pad(src_f, pad, mode="edge")
+    base_pad = _guided_filter(guide_pad, src_pad, radius, eps)
+    base = base_pad[pad : pad + h, pad : pad + w]
+    base_u8 = np.clip(base * 255, 0, 255).astype(np.uint8)
+    if detail_strength == -1.0:
+        out = base_u8
+    else:
+        inp_f = src_u8.astype(np.float32)
+        base_f = base_u8.astype(np.float32)
+        detail = inp_f - base_f
+        out = np.clip(inp_f + detail_strength * detail, 0, 255).astype(np.uint8)
+    gc.collect()
+    return out
+
+
 def _render_internal(
     visual_paths: Dict[str, str],
     analytic_paths: Dict[str, str],
@@ -617,6 +684,25 @@ def _render_internal(
                         eps=c.GF_EPSILON,
                         detail_strength=c.GF_DETAIL_STRENGTH,
                     )
+                if "AP_GF" in v_handles:
+                    synth_pan = _build_synthetic_pan(s_b02, s_b03, s_b04, s_b08)
+                    sharp_b11 = _apply_guided_filter_single(
+                        synth_pan,
+                        s_b11,
+                        radius=c.GF_AP_RADIUS,
+                        eps=c.GF_AP_EPSILON,
+                        detail_strength=c.GF_AP_DETAIL_STRENGTH,
+                    )
+                    sharp_b12 = _apply_guided_filter_single(
+                        synth_pan,
+                        s_b12,
+                        radius=c.GF_AP_RADIUS,
+                        eps=c.GF_AP_EPSILON,
+                        detail_strength=c.GF_AP_DETAIL_STRENGTH,
+                    )
+                    results["AP_GF_VIS"] = np.stack(
+                        [sharp_b12, sharp_b11, s_b08, alpha], axis=0
+                    )
 
                 gc.collect()
                 write_queue.put((window, results), timeout=120)
@@ -743,6 +829,7 @@ def run_pipeline(
         "NDBI_CLEAN",
         "TCI_GF",
         "NIRFC_GF",
+        "AP_GF",
     ]:
         if p in processes:
             if p.endswith("_GF"):

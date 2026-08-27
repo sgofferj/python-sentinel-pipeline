@@ -34,7 +34,7 @@ The goal is to produce physically consistent, high-contrast imagery optimized fo
 - **CAMO:** Discovery composite for spotting anomalies in rural/forested terrain.
 - **TARGET-PROBE-V2:** Sensor fusion gating building signatures with radar returns.
 - **LIFE-MACHINE:** Combined SAR/Optical discovery composite for distinguishing natural terrain from man-made structures.
-- **Guided Filter (TCI-GF / NIRFC-GF):** Edge-preserving smoothing and detail enhancement using Kaiming He's guided filter. TCI-GF uses the 10m NIR band (B08) as guidance to transfer high-frequency edge information into the RGB composite. NIRFC-GF uses self-guidance. Both apply detail enhancement (`output = base + strength × detail`) to recover sharpness lost during smoothing.
+- **Guided Filter (TCI-GF / NIRFC-GF / AP-GF):** Edge-preserving smoothing and detail enhancement using Kaiming He's guided filter. TCI-GF uses the 10m NIR band (B08) as guidance to transfer high-frequency edge information into the RGB composite. NIRFC-GF uses self-guidance. AP-GF sharpens 20m SWIR (B11/B12) to 10m using a synthetic panchromatic guide (`0.1·B02+0.1·B03+0.4·B04+0.4·B08`) to avoid NIR-vs-SWIR vegetation halos. All apply detail enhancement (`output = base + strength × detail`) to recover sharpness lost during smoothing.
 - **AIS Correlation:** Correlates satellite imagery with historical AIS vessel data from a [python-ais-recorder](https://github.com/sgofferj/python-ais-recorder) API. Circles and data blocks are plotted onto S1-Ratio or S2-TCI images to identify ships at the exact moment of acquisition.
 - **Overflight Prediction:** Predicts the next pass of Sentinel-1, Sentinel-2, and Sentinel-3 satellites over your configured bounding boxes using high-precision Skyfield propagation and Celestrak TLEs. Generates GeoJSON swath overlays that can be toggled in the viewer.
 - **SLSTR Fire Detection (S3):** Sentinel-3 SLSTR thermal band processing for active fire monitoring. Brightness Temperature (BT) composites map S8/S7/S9 bands to RGB false-colour. FIRE detection products use a hot-body colormap (transparent for cold backgrounds, dark red→yellow→white for fire intensity). Daily revisit enables fire progression tracking where S2's 5-day cycle falls short.
@@ -103,7 +103,7 @@ Settings are handled via a `.env` file. The pipeline supports dynamic variable e
 | `S2_PRODUCTTYPE` | `L2A` (Bottom of Atmosphere) is recommended                                                                                                       | `L2A`        |
 | `S2_SORTPARAM`   | CDSE sorting parameter (e.g., `startDate`)                                                                                                        | `startDate`  |
 | `S2_SORTORDER`   | `descending` or `ascending`                                                                                                                       | `descending` |
-| `S2_PROCESSES`   | `TCI, NIRFC, AP, NDVI, NDBI, NDBI_CLEAN, NDRE, NBR, CAMO, AIS, TCI-GF, NIRFC-GF`                                                                  | (All)        |
+| `S2_PROCESSES`   | `TCI, NIRFC, AP, NDVI, NDBI, NDBI_CLEAN, NDRE, NBR, CAMO, AIS, TCI-GF, NIRFC-GF, AP-GF`                                                           | (All)        |
 
 ### Sentinel-3 (SLSTR Fire Detection) Parameters
 
@@ -132,7 +132,7 @@ Settings are handled via a `.env` file. The pipeline supports dynamic variable e
 
 ### Guided Filter Parameters
 
-Edge-preserving smoothing and detail enhancement for S2 visual products. Enabled per-product by adding `TCI-GF` or `NIRFC-GF` to `S2_PROCESSES`.
+Edge-preserving smoothing and detail enhancement for S2 visual products. Enabled per-product by adding `TCI-GF`, `NIRFC-GF`, or `AP-GF` to `S2_PROCESSES`.
 
 | Variable                | Description                                                          | Default |
 | :---------------------- | :------------------------------------------------------------------- | :------ |
@@ -140,8 +140,15 @@ Edge-preserving smoothing and detail enhancement for S2 visual products. Enabled
 | `GF_EPSILON`            | Edge-preservation threshold (higher = smoother, less edge detail)    | `0.01`  |
 | `GF_GUIDANCE`           | Guidance image strategy: `B08` (NIR-guided) or `self` (self-guided)  | `B08`   |
 | `GF_DETAIL_STRENGTH`    | Detail enhancement: `-1`=base only, `0`=unchanged, `1`=standard, `2`=aggressive | `2.0`   |
+| `GF_AP_RADIUS`          | Window radius for AP-GF (defaults to `GF_RADIUS`)                    | `2`     |
+| `GF_AP_EPSILON`         | Edge-preservation for AP-GF (lower = sharper SWIR)                  | `0.005` |
+| `GF_AP_DETAIL_STRENGTH` | Detail enhancement for AP-GF                                         | `2.0`   |
+| `GF_AP_W_B02`           | Blue weight in AP synthetic pan guide                                | `0.1`   |
+| `GF_AP_W_B03`           | Green weight in AP synthetic pan guide                               | `0.1`   |
+| `GF_AP_W_B04`           | Red weight in AP synthetic pan guide                                 | `0.4`   |
+| `GF_AP_W_B08`           | NIR weight in AP synthetic pan guide (weights auto-normalise)        | `0.4`   |
 
-TCI-GF uses B08 as guidance → applies B08 edge structure to the RGB composite. NIRFC-GF uses self-guidance → edge-preserving smoothing of the false-color composite. Both use detail enhancement (subtract base, amplify residual, add back) to recover sharpness lost during smoothing.
+TCI-GF uses B08 as guidance → applies B08 edge structure to the RGB composite. NIRFC-GF uses self-guidance → edge-preserving smoothing of the false-color composite. AP-GF builds a synthetic panchromatic guide `G = 0.1·B02+0.1·B03+0.4·B04+0.4·B08` to sharpen 20m SWIR bands (B11/B12) to 10m before forming the `AP` false-colour (`R=B12, G=B11, B=B08`). All use detail enhancement (subtract base, amplify residual, add back) to recover sharpness lost during smoothing.
 
 ### Fusion Parameters
 

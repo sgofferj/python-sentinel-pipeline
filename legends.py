@@ -289,6 +289,13 @@ def save_all_legends(output_dir):
             "NIR",
             extra_info="Pierces smoke/haze. Red=Active fires/Scarring, Green=Healthy Veg, Blue=Water/Urban.",
         ),
+        "S2-AP-GF": get_s2_composite_legend(
+            "AP-GF",
+            "SWIR-2 (sharpened)",
+            "SWIR-1 (sharpened)",
+            "NIR",
+            extra_info="Guided-filter sharpened 10m SWIR. Synthetic pan guide (B02/B03/B04/B08) prevents veg halos.",
+        ),
         # S3 Fire Detection
         "S3-BT": get_s3_bt_legend(),
         "S3-FIRE": get_s3_fire_legend(),
