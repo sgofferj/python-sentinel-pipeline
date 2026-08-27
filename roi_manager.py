@@ -221,6 +221,7 @@ PRODUCT_NAMES = {
     "NBR": "NBR (Burn Index)",
     "CAMO": "Camo Detection",
     "AP": "Atmospheric Penetration (SWIR)",
+    "AP-GF": "Atmospheric Penetration (Guided Filter)",
     "LIFE-MACHINE": "Life/Machine Separation",
     "RADAR-BURN": "Radar Burn Detection",
 }
@@ -228,6 +229,9 @@ PRODUCT_NAMES = {
 
 def get_human_name(product_type: str) -> str:
     """Converts a technical product type to a human-readable name."""
+    pt_up = product_type.upper()
+    if pt_up in PRODUCT_NAMES:
+        return PRODUCT_NAMES[pt_up]
     # Strip sensor prefix (e.g. "S2-TCI-GF" → "TCI-GF")
     rest = product_type.split("-", 1)[1] if "-" in product_type else product_type
     parts = rest.split("-")

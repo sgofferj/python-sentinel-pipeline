@@ -69,6 +69,7 @@ RES_MAP = {
     "S2-NIRFC": 10.0,
     "S2-NIRFC-GF": 10.0,
     "S2-AP": 20.0,
+    "S2-AP-GF": 10.0,
     "S2-NDBI": 20.0,
     "S2-NDBI_CLEAN": 20.0,
     "S2-NDRE": 20.0,

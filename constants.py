@@ -41,6 +41,7 @@ DIRS: Dict[str, str] = {
     "VIS_S2_TCI_GF": os.path.join(OUT_BASE, "visual/s2/tci_gf"),
     "VIS_S2_NIRFC": os.path.join(OUT_BASE, "visual/s2/nirfc"),
     "VIS_S2_NIRFC_GF": os.path.join(OUT_BASE, "visual/s2/nirfc_gf"),
+    "VIS_S2_AP_GF": os.path.join(OUT_BASE, "visual/s2/ap_gf"),
     "VIS_S2_NDVI": os.path.join(OUT_BASE, "visual/s2/ndvi"),
     "VIS_S2_NDRE": os.path.join(OUT_BASE, "visual/s2/ndre"),
     "VIS_S2_NDBI": os.path.join(OUT_BASE, "visual/s2/ndbi"),
@@ -114,6 +115,18 @@ GF_EPSILON: float = float(os.getenv("GF_EPSILON", "0.01"))
 GF_GUIDANCE: str = os.getenv("GF_GUIDANCE", "B08")
 # Detail enhancement: 0 = unchanged, 1 = standard, -1 = base only (smoothing)
 GF_DETAIL_STRENGTH: float = float(os.getenv("GF_DETAIL_STRENGTH", "2.0"))
+
+# AP-GF: SWIR super-resolution via synthetic panchromatic guide.
+# G = w_B02*B02 + w_B03*B03 + w_B04*B04 + w_B08*B08 (weights should sum ~1.0)
+GF_AP_RADIUS: int = int(os.getenv("GF_AP_RADIUS", str(GF_RADIUS)))
+GF_AP_EPSILON: float = float(os.getenv("GF_AP_EPSILON", "0.005"))
+GF_AP_DETAIL_STRENGTH: float = float(
+    os.getenv("GF_AP_DETAIL_STRENGTH", str(GF_DETAIL_STRENGTH))
+)
+GF_AP_W_B02: float = float(os.getenv("GF_AP_W_B02", "0.1"))
+GF_AP_W_B03: float = float(os.getenv("GF_AP_W_B03", "0.1"))
+GF_AP_W_B04: float = float(os.getenv("GF_AP_W_B04", "0.4"))
+GF_AP_W_B08: float = float(os.getenv("GF_AP_W_B08", "0.4"))
 
 # ----- Sentinel 3 SLSTR Band Indices --------------------------------
 S3_BAND_S7: int = 1  # 3.74 µm (MIR, fire)

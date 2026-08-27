@@ -175,6 +175,7 @@ PRODUCT_NAMES: Dict[str, str] = {
     "NBR": "NBR (Burn Index)",
     "CAMO": "Camo Detection",
     "AP": "Atmospheric Penetration (SWIR)",
+    "AP-GF": "Atmospheric Penetration (Guided Filter)",
     "LIFE-MACHINE": "Life/Machine Separation",
     "RADAR-BURN": "Radar Burn Detection",
     "BT": "Brightness Temperature",
