@@ -20,7 +20,7 @@ import json
 import math
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from io import BytesIO
 from typing import Any, Dict, List, Tuple, Optional
 
@@ -193,69 +193,6 @@ def _delta_to_rgb(delta: np.ndarray, vmin: float, vmax: float) -> tuple[np.ndarr
     return r, g, b
 
 
-def _build_water_mask(roi_bbox_str: str, out_shape: tuple, transform, crs, tmp_dir: str) -> Optional[np.ndarray]:
-    """Rasterize SeaVox polygon to a boolean water mask matching the delta grid.
-
-    Returns True=water bool array (same shape as out_shape) or None if disabled / no intersect.
-    Only called when S1_DELTA_WATER_MASK is true (constants.py validates path exists).
-    """
-    if not c.S1_DELTA_WATER_MASK:
-        return None
-    mask_path = c.S1_DELTA_WATER_MASK_PATH
-    if not mask_path or not os.path.exists(mask_path):
-        return None
-
-    try:
-        west, south, east, north = map(float, roi_bbox_str.split(","))
-        roi_poly_4326 = box(west, south, east, north)
-    except Exception:
-        return None
-
-    try:
-        with open(mask_path, "r", encoding="utf-8") as f:
-            geojson = json.load(f)
-        polys = []
-        for feat in geojson.get("features", []):
-            geom = feat.get("geometry")
-            if geom:
-                polys.append(shape(geom))
-        if not polys:
-            return None
-        water_union_4326 = unary_union(polys)
-    except Exception as e:
-        print(f"  Water mask load error: {e}", flush=True)
-        return None
-
-    if not roi_poly_4326.intersects(water_union_4326):
-        print("  ROI does not intersect water mask — skipping water masking.", flush=True)
-        return None
-
-    print("  ROI intersects water mask — rasterizing water polygon...", flush=True)
-
-    try:
-        from rasterio.crs import CRS
-        from rasterio.warp import transform_geom
-
-        if isinstance(crs, str):
-            dst_crs = CRS.from_string(crs)
-        else:
-            dst_crs = crs
-
-        water_geom_3857 = transform_geom(CRS.from_epsg(4326), dst_crs, water_union_4326)
-
-        from rasterio.features import geometry_mask
-
-        water_mask = geometry_mask(
-            [water_geom_3857],
-            out_shape=out_shape,
-            transform=transform,
-            invert=True,
-        )
-        return water_mask
-    except Exception as e:
-        print(f"  Water mask rasterize error: {e}", flush=True)
-        return None
-
 
 def _warp_analytic_to_roi(src_paths: List[str], bbox_str: str, tmp_path: str) -> bool:
     """Warp one or more analytic Float32 VV/VH to ROI bbox at 15 m EPSG:3857 (mosaic if needed)."""
@@ -331,12 +268,11 @@ def _compute_roi_delta(
     vh_paths_new: Optional[List[str]],
     bbox_str: str,
     vis_out: str,
-    ana_out: str,
     rel_orbit: Optional[str],
     orbit_dir: Optional[str],
     satellite: Optional[str],
 ) -> bool:
-    """Create ROI delta visual (RGBA) + analytic (Float32) via warped VV difference. Handles multi-slice mosaic."""
+    """Create ROI delta visual (RGBA) via warped VV difference. Handles multi-slice mosaic."""
     tmp_new = tmp_old = tmp_vh = None
     try:
         fd, tmp_new = tempfile.mkstemp(suffix="_delta_new.tif")
@@ -401,33 +337,11 @@ def _compute_roi_delta(
 
             del vv_new_lin, vv_old_lin
             gc.collect()
-            # Analytic
-            ana_profile = profile.copy()
-            ana_profile.update(driver="GTiff", dtype=rio.float32, count=1, compress="DEFLATE", tiled=True, blockxsize=256, blockysize=256, nodata=0, BIGTIFF="YES", num_threads=2)
-            with rio.open(ana_out, "w", **ana_profile) as dst_ana:
-                dst_ana.write(delta, 1)
-                if rel_orbit and rel_orbit != "unknown":
-                    dst_ana.update_tags(RELATIVE_ORBIT_NUMBER=str(rel_orbit))
-                if orbit_dir:
-                    dst_ana.update_tags(ORBIT_DIRECTION=orbit_dir)
-                if satellite:
-                    dst_ana.update_tags(SATELLITE=satellite)
-                dst_ana.update_tags(DELTA_VH_THRESH=str(c.S1_DELTA_VH_THRESH))
             # Visual
             vmin, vmax = c.S1_DELTA_MIN, c.S1_DELTA_MAX
             delta_clipped = np.clip(delta, vmin, vmax)
             r, g, b = _delta_to_rgb(delta_clipped, vmin, vmax)
             gated = valid & (np.abs(delta) >= c.S1_DELTA_GATE_DB)
-            # Water mask: suppress Gulf of Finland speckle
-            water = _build_water_mask(
-                roi_bbox,
-                out_shape=(profile["height"], profile["width"]),
-                transform=profile.get("transform"),
-                crs=profile.get("crs", "EPSG:3857"),
-                tmp_dir=tmp_dir,
-            )
-            if water is not None:
-                gated &= ~water
             alpha = np.where(gated, 255, 0).astype(np.uint8)
             r = np.where(gated, r, 0).astype(np.uint8)
             g = np.where(gated, g, 0).astype(np.uint8)
@@ -448,7 +362,6 @@ def _compute_roi_delta(
                     dst_vis.update_tags(SATELLITE=satellite)
             cog.convert_to_cog(vis_out)
             cog.ensure_overviews(vis_out)
-            cog.convert_to_cog(ana_out)
             # Sidecar for visual (ROI product)
             # Use ROI naming, legend S1-DELTA
             # Caller will have set product_type, but ensure sidecar generated
@@ -457,7 +370,7 @@ def _compute_roi_delta(
             return True
     except Exception as e:
         print(f"Delta compute failed {ana_paths_new} vs {ana_paths_old}: {e}", flush=True)
-        for p in [vis_out, ana_out]:
+        for p in [vis_out]:
             if p and os.path.exists(p):
                 try:
                     os.remove(p)
@@ -482,7 +395,40 @@ def _compute_roi_delta(
             pass
 
 
-def create_social_image(src_path: str, base_dst_path: str) -> str:
+def _stamp_image(img: Image.Image, acq_old: str, acq_new: str, orbit_dir: Optional[str] = None) -> Image.Image:
+    """Add a semi-transparent data stamp to the bottom-right of an RGBA or RGB image."""
+    from PIL import ImageDraw, ImageFont
+    def _fmt(ts: str) -> str:
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            return dt.strftime("%Y-%m-%d %H:%MZ")
+        except Exception:
+            return ts[:16] + "Z"
+    lines = [f"{_fmt(acq_new)}  →  {_fmt(acq_old)}", f"ΔSAR  |  {(orbit_dir or 'UNK').upper()}"]
+    if img.mode != "RGBA":
+        img = img.convert("RGBA")
+    w, h = img.size
+    bar_h = max(int(h * 0.06), 32)
+    overlay = Image.new("RGBA", (w, bar_h), (0, 0, 0, 160))
+    img.paste(overlay, (0, h - bar_h), overlay)
+    draw = ImageDraw.Draw(img)
+    font_size = max(int(bar_h * 0.36), 10)
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+    except Exception:
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", font_size)
+        except Exception:
+            font = ImageFont.load_default()
+    for i, line in enumerate(lines):
+        _, _, tw, th = draw.textbbox((0, 0), line, font=font)
+        tx = w - tw - int(w * 0.015)
+        ty = h - bar_h + int(bar_h * 0.08) + i * (th + 2)
+        draw.text((tx, ty), line, fill=(230, 230, 230, 255), font=font)
+    return img
+
+
+def create_social_image(src_path: str, base_dst_path: str, stamp_acq_old: Optional[str] = None, stamp_acq_new: Optional[str] = None, stamp_orbit: Optional[str] = None) -> str:
     """
     Creates a non-georeferenced HEIC image from a TIFF for Bluesky.
     Iteratively scales and compresses to stay under Bluesky's 2MB limit.
@@ -495,6 +441,9 @@ def create_social_image(src_path: str, base_dst_path: str) -> str:
                 rgb_img = img.convert("RGB")
             else:
                 rgb_img = img
+            # Stamp delta metadata on social images
+            if stamp_acq_old and stamp_acq_new:
+                rgb_img = _stamp_image(rgb_img, stamp_acq_old, stamp_acq_new, stamp_orbit).convert("RGB")
 
             max_dim = 4000
             quality = 80
@@ -532,7 +481,7 @@ def create_social_image(src_path: str, base_dst_path: str) -> str:
         return ""
 
 
-def create_full_image(src_path: str, base_dst_path: str) -> str:
+def create_full_image(src_path: str, base_dst_path: str, stamp_acq_old: Optional[str] = None, stamp_acq_new: Optional[str] = None, stamp_orbit: Optional[str] = None) -> str:
     """
     Creates a full-size non-georeferenced JPEG from a TIFF.
     Returns the path to the created image.
@@ -543,6 +492,9 @@ def create_full_image(src_path: str, base_dst_path: str) -> str:
                 rgb_img = img.convert("RGB")
             else:
                 rgb_img = img
+            # Stamp delta metadata on social images
+            if stamp_acq_old and stamp_acq_new:
+                rgb_img = _stamp_image(rgb_img, stamp_acq_old, stamp_acq_new, stamp_orbit).convert("RGB")
 
             dst_path = base_dst_path + "_full.jpg"
             # High quality JPEG, no downscaling
@@ -1243,20 +1195,15 @@ def run_roi_stage(
     # --- S1 Delta per-ROI (with combining, orbit-matched, via products[] DELTA) ---
     # Runs after normal crops, so new S1 visuals are already in inventory if needed, but delta uses VV analytics
     delta_rois = [r for r in rois if _roi_wants_delta(r)]
-    if delta_rois and c.S1_DELTA_WATER_MASK:
-        if not c.S1_DELTA_WATER_MASK_PATH or not os.path.exists(c.S1_DELTA_WATER_MASK_PATH):
-            msg = f"ERROR: S1_DELTA_WATER_MASK=true but S1_DELTA_WATER_MASK_PATH missing or not found: '{c.S1_DELTA_WATER_MASK_PATH}'"
-            print(msg, flush=True)
-            try:
-                func.perf_logger.log_info(msg)
-            except Exception:
-                pass
-            raise FileNotFoundError(msg)
     if delta_rois:
         # Build S1 groups from inventory (like groups_to_process but for S1 only, using coverage)
         # Use all_layers, not just new groups, to find history for pairing
         # Filter S1 layers that have a VV analytic (via S1-VV or S1-RATIO proxy)
         s1_layers_all = [l for l in all_layers if l.get("product") in ("S1-VV", "S1-RATIO")]
+        # Prefer S1-RATIO over S1-VV for the same date+orbit to avoid self-pairs
+        ratio_dates = {(l.get("acquisition_time", "")[:10], l.get("orbit_direction")) for l in s1_layers_all if l.get("product") == "S1-RATIO"}
+        s1_layers_all = [l for l in s1_layers_all if l.get("product") == "S1-RATIO" or (l.get("acquisition_time", "")[:10], l.get("orbit_direction")) not in ratio_dates]
+        print(f"  DELTA: {len(delta_rois)} ROI(s) want delta, {len(s1_layers_all)} S1-VV/RATIO layers in inventory.", flush=True)
         # Group S1 layers by (date, orbit) for coverage testing (like ROI manager groups)
         # For delta we need per-date groups, so rebuild grouping similar to earlier but S1-specific
         s1_grouped: Dict[Tuple[str, Optional[str], Optional[str], str], List[Dict[str, Any]]] = {}
@@ -1266,9 +1213,9 @@ def run_roi_stage(
                 continue
             acq = layer.get("acquisition_time", "Unknown")
             date_part = acq[:10] if len(acq) >= 10 else acq
-            rel = layer.get("relative_orbit")
+            rel = layer.get("relative_orbit") or "unknown"
             odir = layer.get("orbit_direction")
-            key = (date_part if rel else acq, rel, odir, p_type)
+            key = (date_part, rel, odir, p_type)
             s1_grouped.setdefault(key, []).append(layer)
         for roi in delta_rois:
             roi_name_raw = roi.get("name", "ROI")
@@ -1305,6 +1252,7 @@ def run_roi_stage(
                         continue
                 except Exception:
                     continue
+                covered_groups.append((date_part, rel, odir, layers, best_paths, cov, base_acq))
                 # Find VH paths for same date+orbit for masking (optional)
                 vh_paths: List[str] = []
                 # Find VH analytic for same date+orbit
@@ -1328,7 +1276,6 @@ def run_roi_stage(
                             ana_vh = os.path.join(c.DIRS["ANA_S1_VH"], base_vh)
                             if os.path.exists(ana_vh):
                                 vh_paths.append(ana_vh)
-                covered_groups.append((date_part, rel, odir, layers, best_paths, cov, base_acq))
             if len(covered_groups) < 2:
                 continue
             # Group by orbit for pairing (relative_orbit may be None -> use unknown)
@@ -1361,16 +1308,14 @@ def run_roi_stage(
                                     is_new_dirty = True
                                     break
                             except Exception:
-                                continue
+                                pass
                     if not is_new_dirty and not process_all and not date_filter:
                         continue
                     iso_clean = base_acq_new.replace(":", "")
                     safe_roi = roi_name.replace(" ", "_")
                     dst_filename = f"{safe_roi}_DELTA_{iso_clean}.tif"
                     dst_path = os.path.join(c.DIRS["VIS_ROI"], dst_filename)
-                    ana_filename = f"{safe_roi}_DELTA_{iso_clean}.tif"
-                    ana_path = os.path.join(c.DIRS["ANA_S1_DELTA"], ana_filename)
-                    if os.path.exists(dst_path) and os.path.exists(ana_path):
+                    if os.path.exists(dst_path):
                         continue
                     if dry_run:
                         print(f"ROI Delta: {roi_name} {rel_key} {odir_key} {base_acq_old} -> {base_acq_new} ({cov_new:.1f}%) -> would create {dst_filename} (combining {len(paths_new)}+{len(paths_old)} VV tiles)", flush=True)
@@ -1396,7 +1341,7 @@ def run_roi_stage(
                                 ana_vh = os.path.join(c.DIRS["ANA_S1_VH"], base_vh)
                                 if os.path.exists(ana_vh):
                                     vh_for_new.append(ana_vh)
-                    ok = _compute_roi_delta(paths_new, paths_old, vh_for_new if vh_for_new else None, roi_bbox, dst_path, ana_path, rel_new, odir_new, None)
+                    ok = _compute_roi_delta(paths_new, paths_old, vh_for_new if vh_for_new else None, roi_bbox, dst_path, rel_new, odir_new, None)
                     if not ok:
                         continue
                     # Generate sidecar for ROI delta (like other ROI crops)
@@ -1422,14 +1367,14 @@ def run_roi_stage(
                             social_base = os.path.join(c.DIRS["VIS_ROI"], f"{safe_roi}_DELTA_{iso_clean}_social")
                             if apprise_url:
                                 func.perf_logger.log_info(f"Creating full-size JPEG for {roi_name} DELTA")
-                                full_image = create_full_image(dst_path, social_base)
+                                full_image = create_full_image(dst_path, social_base, stamp_acq_old=base_acq_old, stamp_acq_new=base_acq_new, stamp_orbit=odir_new)
                                 if full_image:
                                     human_prod = get_human_name("S1-DELTA")
                                     msg = f"New {human_prod} image for ROI {roi_name}\nAcquired: {base_acq_new}\nSatellite: {sat or 'Sentinel-1'}\nDelta: {base_acq_old} -> {base_acq_new} ({rel_key} {odir_key})"
                                     func.perf_logger.log_info(f"Sending Apprise notification for {roi_name} DELTA")
                                     notify.send_notification(message=msg, title=f"ROI Update: {roi_name} DELTA", urls=apprise_url, attachment=full_image)
                             if social_needed:
-                                img_path = create_social_image(dst_path, social_base)
+                                img_path = create_social_image(dst_path, social_base, stamp_acq_old=base_acq_old, stamp_acq_new=base_acq_new, stamp_orbit=odir_new)
                                 if img_path:
                                     post_to_bsky(config, roi_name, "S1-DELTA", base_acq_new, "Sentinel-1", img_path)
                     # Only one delta per ROI per orbit per run (newest pair)

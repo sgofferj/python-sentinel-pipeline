@@ -653,7 +653,7 @@ def cleanup_delta_outputs(days: int, dry_run: bool = True) -> None:
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
     action = "Dry-run: Checking" if dry_run else "Cleaning up"
     print(f"{action} S1 Delta outputs older than {days} days...", flush=True)
-    for root_key in ("VIS_S1_DELTA", "ANA_S1_DELTA"):
+    for root_key in ("VIS_S1_DELTA",):
         root = c.DIRS.get(root_key, "")
         if not root or not os.path.exists(root):
             continue
