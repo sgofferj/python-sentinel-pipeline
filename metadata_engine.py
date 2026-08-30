@@ -62,6 +62,7 @@ RES_MAP = {
     "S1-VH": 15.0,
     "S1-RATIO": 15.0,
     "S1-RATIO-AIS": 15.0,
+    "S1-DELTA": 15.0,
     "S2-TCI": 10.0,
     "S2-TCI-AIS": 10.0,
     "S2-TCI-GF": 10.0,
@@ -125,6 +126,12 @@ def identify_tif(tif_path: str) -> tuple[str, str]:
                 legend_id = f"S2-{norm_suffix}"
             return product_id, legend_id
         return f"ROI-{filename}", "S2-TCI"
+
+    # Delta special case: visual/s1/delta/ROI_DELTA_*.tif -> S1-DELTA
+    if sat == "S1" and p_type == "DELTA":
+        # Filename is like Kronstadt_DELTA_2026-08-26T...Z.tif
+        # Keep orbit/satellite tags from TIFF, but product is S1-DELTA
+        return "S1-DELTA", "S1-DELTA"
 
     # Standard S1/S2
     p_type = parts[idx + 2].upper()

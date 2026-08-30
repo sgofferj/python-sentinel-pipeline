@@ -55,7 +55,7 @@ const Z_INDEX_PREDICTIONS = 150000000;
 const Z_INDEX_OVERLAYS = 200000000;
 
 const S2_PRIORITY = ["TCI", "TCI-GF", "TCI-AIS", "NIRFC", "NIRFC-GF", "AP", "AP-GF", "NDBI_CLEAN", "NDBI", "NDRE", "NDVI", "NBR", "CAMO"];
-const S1_PRIORITY = ["VV", "VH", "RATIO", "RATIO-AIS"];
+const S1_PRIORITY = ["VV", "VH", "RATIO", "RATIO-AIS", "DELTA"];
 const S3_PRIORITY = ["FIRE", "BT"];
 
 // --- HELPERS ---
@@ -817,7 +817,14 @@ function getGridSquare(l) {
 }
 
 function getRoiName(l) {
-    if (!l.product.startsWith("ROI")) return "";
+    if (!l.product.startsWith("ROI")) {
+        // S1-DELTA stores ROI name as prefix: Kronstadt_DELTA_*.tif
+        if (l.product === "S1-DELTA") {
+            const fn = l.path.split('/').pop();
+            if (fn.includes("_DELTA_")) return fn.split("_DELTA_")[0];
+        }
+        return "";
+    }
     const fn = l.path.split('/').pop();
     // Format: ROI-Name-Prod-Time.tif or Name_Prod_Time.tif
     // The current roi_manager uses Name_Prod_Time.tif

@@ -310,6 +310,9 @@ def find_outdated_analytic_files(
         return outdated
 
     for root, _, files in os.walk(analytic_root):
+        # Skip Delta and S1 VV/VH analytic - needed for Delta (14d retention) handled by cleanup_delta_outputs / S1 retention
+        if "delta" in root.lower() or "s1/vv" in root.lower() or "s1\\vv" in root.lower() or "s1/vh" in root.lower():
+            continue
         for file in files:
             file_path = os.path.join(root, file)
 
@@ -403,7 +406,7 @@ def cleanup_outputs(products: List[Dict[str, Any]], dry_run: bool = True) -> Non
         dp
         for dp in c.DIRS.values()
         if dp.startswith(os.path.join(c.DIRS["OUT"], "visual"))
-        and dp != c.DIRS["VIS_ROI"]
+        and dp not in (c.DIRS["VIS_ROI"], c.DIRS["VIS_S1_DELTA"])
     ]
 
     for prod in products:
@@ -645,6 +648,40 @@ def cleanup_roi_outputs(days: int, dry_run: bool = True) -> None:
     print(f"{count_label} {removed_count} ROI files.", flush=True)
 
 
+def cleanup_delta_outputs(days: int, dry_run: bool = True) -> None:
+    """Removes outdated S1 Delta visual + analytic products (same retention as S1)."""
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
+    action = "Dry-run: Checking" if dry_run else "Cleaning up"
+    print(f"{action} S1 Delta outputs older than {days} days...", flush=True)
+    for root_key in ("VIS_S1_DELTA", "ANA_S1_DELTA"):
+        root = c.DIRS.get(root_key, "")
+        if not root or not os.path.exists(root):
+            continue
+        removed = 0
+        for filename in os.listdir(root):
+            match = re.search(r"_(\d{4}-\d{2}-\d{2}T\d{6})Z", filename)
+            if not match:
+                continue
+            time_str = match.group(1)
+            try:
+                acq_time = datetime.strptime(time_str, "%Y-%m-%dT%H%M%S").replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            if acq_time < cutoff_date:
+                file_path = os.path.join(root, filename)
+                if dry_run:
+                    print(f"[DRY-RUN] Would remove Delta file: {file_path}", flush=True)
+                    removed += 1
+                else:
+                    try:
+                        os.remove(file_path)
+                        removed += 1
+                    except OSError as e:
+                        print(f"Error removing {file_path}: {e}", flush=True)
+        count_label = "Would remove" if dry_run else "Removed"
+        print(f"{count_label} {removed} {root_key} files.", flush=True)
+
+
 STALE_TMP_PATTERNS: List[str] = [
     "vv_raw.tif",
     "vh_raw.tif",
@@ -823,13 +860,19 @@ def run_cleanup(
                 flush=True,
             )
 
+    # Delta uses S1 retention
+    delta_days = s1_days if s1_days is not None else days
     if not outdated_products_list:
         print("No outdated products found.", flush=True)
     else:
         cleanup_outputs(outdated_products_list, dry_run)
         cleanup_roi_outputs(roi_days, dry_run)
+        cleanup_delta_outputs(delta_days, dry_run)
         cleanup_source_data(outdated_products_list, dry_run)
         cleanup_logs(outdated_products_list, dry_run)
+    # Even when no outdated visual, delta may have orphaned files
+    if not outdated_products_list:
+        cleanup_delta_outputs(delta_days, dry_run)
 
         if not dry_run:
             print("\nRebuilding inventory...", flush=True)
