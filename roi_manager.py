@@ -230,7 +230,7 @@ def _build_water_mask(roi_bbox_str: str, out_shape: tuple, transform, crs, tmp_d
         print("  ROI does not intersect water mask — skipping water masking.", flush=True)
         return None
 
-    print("  ROI intersects water mask — rasterizing SeaVox polygon...", flush=True)
+    print("  ROI intersects water mask — rasterizing water polygon...", flush=True)
 
     try:
         from rasterio.crs import CRS
