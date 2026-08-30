@@ -219,6 +219,33 @@ def get_s3_fire_legend():
     """
 
 
+def get_s1_delta_legend():
+    """Returns HTML for S1 Delta (change) legend — turbo palette, gate at 0.7 dB."""
+    # Turbo palette from legends.py:17 (RADAR-BURN) — dark blue (-3) to dark red (+3), 0 ~ green/yellow
+    turbo = "linear-gradient(to right, #30123b, #4662d8, #36aaf9, #1ae4b6, #a4fc3c, #fbb318, #e4460a, #7a0403)"
+    # Viridis alternative: linear-gradient(to right, #440154, #482777, #3e4989, #31688e, #26828e, #35b779, #6ece58, #b5de2b, #fde725)
+    palette = turbo if c.S1_DELTA_PALETTE.lower() == "turbo" else ("linear-gradient(to right, #440154, #482777, #3e4989, #31688e, #26828e, #35b779, #6ece58, #b5de2b, #fde725)" if c.S1_DELTA_PALETTE.lower() == "viridis" else "linear-gradient(to right, #a50026, #d73027, #f46d43, #fdae61, #fee08b, #ffffbf, #d9ef8b, #a6d96a, #66bd63, #1a9850, #006837)")
+    return f"""
+    <div class="legend-box" style="padding: 10px; background: rgba(0,0,0,0.8); color: white; border-radius: 5px; font-family: monospace; font-size: 12px;">
+        <div style="font-weight: bold; margin-bottom: 5px; color: #ffeb3b;">S1 DELTA (VV Change dB)</div>
+        <div style="height: 12px; width: 200px; background: {palette}; border: 1px solid #444;"></div>
+        <div style="display: flex; justify-content: space-between; width: 200px; margin-top: 2px;">
+            <span>{c.S1_DELTA_MIN:.1f}</span>
+            <span>0</span>
+            <span>+{c.S1_DELTA_MAX:.1f}</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; width: 200px; margin-top: 2px; font-size: 10px; color: #aaa;">
+            <span>Removed</span>
+            <span>Stable</span>
+            <span>New</span>
+        </div>
+        <div style="margin-top: 5px; font-size: 10px; color: #aaa;">
+            VV<sub>t</sub> − VV<sub>t-1</sub> (same orbit). Red = loss, Green = new backscatter.
+        </div>
+    </div>
+    """
+
+
 def get_ais_legend(base_legend_html, product_name):
     """Wraps an existing legend with an AIS overlay indicator."""
     ais_part = """
@@ -299,6 +326,7 @@ def save_all_legends(output_dir):
         # S3 Fire Detection
         "S3-BT": get_s3_bt_legend(),
         "S3-FIRE": get_s3_fire_legend(),
+        "S1-DELTA": get_s1_delta_legend(),
         "S2-CAMO": get_s2_composite_legend(
             "CAMO",
             "NDVI",
