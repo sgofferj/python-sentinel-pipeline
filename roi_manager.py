@@ -193,6 +193,70 @@ def _delta_to_rgb(delta: np.ndarray, vmin: float, vmax: float) -> tuple[np.ndarr
     return r, g, b
 
 
+def _build_water_mask(roi_bbox_str: str, out_shape: tuple, transform, crs, tmp_dir: str) -> Optional[np.ndarray]:
+    """Rasterize SeaVox polygon to a boolean water mask matching the delta grid.
+
+    Returns True=water bool array (same shape as out_shape) or None if disabled / no intersect.
+    Only called when S1_DELTA_WATER_MASK is true (constants.py validates path exists).
+    """
+    if not c.S1_DELTA_WATER_MASK:
+        return None
+    mask_path = c.S1_DELTA_WATER_MASK_PATH
+    if not mask_path or not os.path.exists(mask_path):
+        return None
+
+    try:
+        west, south, east, north = map(float, roi_bbox_str.split(","))
+        roi_poly_4326 = box(west, south, east, north)
+    except Exception:
+        return None
+
+    try:
+        with open(mask_path, "r", encoding="utf-8") as f:
+            geojson = json.load(f)
+        polys = []
+        for feat in geojson.get("features", []):
+            geom = feat.get("geometry")
+            if geom:
+                polys.append(shape(geom))
+        if not polys:
+            return None
+        water_union_4326 = unary_union(polys)
+    except Exception as e:
+        print(f"  Water mask load error: {e}", flush=True)
+        return None
+
+    if not roi_poly_4326.intersects(water_union_4326):
+        print("  ROI does not intersect water mask — skipping water masking.", flush=True)
+        return None
+
+    print("  ROI intersects water mask — rasterizing SeaVox polygon...", flush=True)
+
+    try:
+        from rasterio.crs import CRS
+        from rasterio.warp import transform_geom
+
+        if isinstance(crs, str):
+            dst_crs = CRS.from_string(crs)
+        else:
+            dst_crs = crs
+
+        water_geom_3857 = transform_geom(CRS.from_epsg(4326), dst_crs, water_union_4326)
+
+        from rasterio.features import geometry_mask
+
+        water_mask = geometry_mask(
+            [water_geom_3857],
+            out_shape=out_shape,
+            transform=transform,
+            invert=True,
+        )
+        return water_mask
+    except Exception as e:
+        print(f"  Water mask rasterize error: {e}", flush=True)
+        return None
+
+
 def _warp_analytic_to_roi(src_paths: List[str], bbox_str: str, tmp_path: str) -> bool:
     """Warp one or more analytic Float32 VV/VH to ROI bbox at 15 m EPSG:3857 (mosaic if needed)."""
     try:
@@ -354,6 +418,16 @@ def _compute_roi_delta(
             delta_clipped = np.clip(delta, vmin, vmax)
             r, g, b = _delta_to_rgb(delta_clipped, vmin, vmax)
             gated = valid & (np.abs(delta) >= c.S1_DELTA_GATE_DB)
+            # Water mask: suppress Gulf of Finland speckle
+            water = _build_water_mask(
+                roi_bbox,
+                out_shape=(profile["height"], profile["width"]),
+                transform=profile.get("transform"),
+                crs=profile.get("crs", "EPSG:3857"),
+                tmp_dir=tmp_dir,
+            )
+            if water is not None:
+                gated &= ~water
             alpha = np.where(gated, 255, 0).astype(np.uint8)
             r = np.where(gated, r, 0).astype(np.uint8)
             g = np.where(gated, g, 0).astype(np.uint8)
