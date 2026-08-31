@@ -741,6 +741,32 @@ def cleanup_temp_files(dry_run: bool = True) -> None:
     for root in [tmp_dir, c.DIRS["OUT"]]:
         total += glob_remove(".grid.tif", root, dry_run)
 
+    # 3. COG finalizer orphans: *.tmp.tif, *.tmp.json, *.ovr.tmp, *.tif.tmp, etc.
+    #    These are left when gdal_translate / gdaladdo is killed mid-run.
+    #    They appear as S1_...tif.tmp.tif, S1_...tif.tmp.tif.ovr.tmp, etc.
+    #    Also handle generic ".tmp" in filename to catch S1_...tif.tmp and variants.
+    for root in [c.DIRS["OUT"]]:
+        total += glob_remove(".tmp.tif", root, dry_run)
+        total += glob_remove(".tmp.json", root, dry_run)
+        total += glob_remove(".ovr.tmp", root, dry_run)
+        total += glob_remove(".tif.tmp", root, dry_run)
+        # Generic: any file with ".tmp" in name (e.g., S1_...tif.tmp.tif, S1_...json.tmp.json)
+        for dirpath, _, filenames in os.walk(root):
+            for fn in filenames:
+                if ".tmp" in fn:
+                    # Already handled exact suffixes above, but catch e.g., .tmp.tif.json
+                    if fn.endswith(".tmp.tif") or fn.endswith(".tmp.json") or fn.endswith(".ovr.tmp") or fn.endswith(".tif.tmp"):
+                        continue
+                    path = os.path.join(dirpath, fn)
+                    if dry_run:
+                        print(f"  [DRY-RUN] Would remove {path}", flush=True)
+                    else:
+                        try:
+                            os.remove(path)
+                            total += 1
+                        except OSError as e:
+                            print(f"  Error removing {path}: {e}", flush=True)
+
 
 def run_cleanup(
     days: int = 30,

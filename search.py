@@ -162,8 +162,14 @@ def search_s2(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
                 start_date = func.offset_timestamp(log_time, hours=24)
             last_ids = [f["id"] for f in log.get("files", []) if "id" in f]
 
+    # S2 search area is the union of all BBOXes (Suomenlahti + MK1 + home = ~800km wide).
+    # With maxRecords=10 the CDSE $top is per-box but still too small when the box is
+    # large and the most recent 10 that pass cloudCover are all from one orbit.
+    # Fetch a larger window and trim to maxRecords after deduplication, like S3.
+    fetch_limit = max(50, max_records * 5)
+
     print(
-        f"Searching S2 ({product_type}, Cloud < {cloud_cover}%) from {start_date} (Watermark: {log.get('time') if 'log' in locals() and log else 'N/A'})...",
+        f"Searching S2 ({product_type}, Cloud < {cloud_cover}%) from {start_date} (fetch_limit={fetch_limit}, want {max_records}/box, Watermark: {log.get('time') if 'log' in locals() and log else 'N/A'})...",
         flush=True,
     )
 
@@ -174,7 +180,7 @@ def search_s2(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
             startDate=start_date,
             box=box,
             cloudCover=cloud_cover,
-            maxRecords=max_records,
+            maxRecords=fetch_limit,
             sortParam=sort_param,
             sortOrder=sort_order,
         )
@@ -189,7 +195,8 @@ def search_s2(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
                     box_files.append(feat)
                     seen_ids.add(file_id)
                     num_files += 1
-            search_result[box] = box_files
+            # Trim to the most recent max_records per box (preserves per-box quota)
+            search_result[box] = box_files[:max_records]
 
     print(
         f"S2 search complete. Found {num_files} unique new products across {len(boxes)} areas.",
