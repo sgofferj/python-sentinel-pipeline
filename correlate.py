@@ -342,6 +342,7 @@ def fuse_radar_optical(
             effective_res=10.0,
             relative_orbit=rel_orbit,
             orbit_direction=orb_dir,
+            footprint=inter_geom,
         )
         cog.convert_to_cog(out_path)
         return True
@@ -496,6 +497,7 @@ def fuse_target_probe_v2(
                 effective_res=10.0,
                 relative_orbit=rel_orbit,
                 orbit_direction=orb_dir,
+                footprint=inter_geom,
             )
             cog.convert_to_cog(out_path)
             return True
@@ -657,6 +659,7 @@ def fuse_life_machine(
                 effective_res=10.0,
                 relative_orbit=rel_orbit,
                 orbit_direction=orb_dir,
+                footprint=inter_geom,
             )
             cog.convert_to_cog(out_path)
             return True

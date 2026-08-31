@@ -1082,6 +1082,32 @@ def run_roi_stage(
 
                 # Generate sidecar for the new crop
                 sat_val = layers[0].get("satellite")
+                # Fast footprint: intersect parent footprint(s) with ROI bbox (avoids raster vectorisation)
+                parent_layers_fp = [best_single_layer] if (best_single_layer and max_single_coverage >= roi_match_threshold) else layers
+                footprint_geom = None
+                try:
+                    _geoms = []
+                    for _l in parent_layers_fp:
+                        _fp = _l.get("footprint")
+                        if _fp:
+                            try:
+                                _geoms.append(shape(_fp))
+                            except Exception:
+                                pass
+                        else:
+                            _b = _l.get("bounds")
+                            if _b:
+                                try:
+                                    _geoms.append(box(_b[0][1], _b[0][0], _b[1][1], _b[1][0]))
+                                except Exception:
+                                    pass
+                    if _geoms:
+                        _union = unary_union(_geoms)
+                        _inter = _union.intersection(roi_poly)
+                        if not _inter.is_empty:
+                            footprint_geom = _inter
+                except Exception:
+                    footprint_geom = None
                 meta.generate_sidecar(
                     dst_path,
                     f"ROI-{roi_name}-{p_suffix}",
@@ -1091,6 +1117,7 @@ def run_roi_stage(
                     relative_orbit=rel_orbit,
                     orbit_direction=orbit_dir,
                     satellite=sat_val,
+                    footprint=footprint_geom,
                 )
                 crops_created += 1
 

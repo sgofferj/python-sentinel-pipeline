@@ -357,6 +357,7 @@ def _render_internal(
     relative_orbit: Optional[str] = None,
     orbit_direction: Optional[str] = None,
     platform: Optional[str] = None,
+    footprint: Optional[str] = None,
 ) -> None:
     """Macro-block threaded renderer for S2 indices using Double Buffering and GPU Concurrency."""
     func.perf_logger.start_step("S2 Single-Pass Render", use_gpu=True)
@@ -759,6 +760,7 @@ def _render_internal(
                     relative_orbit=relative_orbit,
                     orbit_direction=orbit_direction,
                     satellite=platform,
+                    footprint=footprint,
                 )
 
             with ThreadPoolExecutor(
@@ -847,10 +849,11 @@ def run_pipeline(
     cloud_cover = float(cc_val) if cc_val is not None else None
 
     # Extract orbit and platform metadata
+    footprint = ds_obj.GetMetadata().get("FOOTPRINT")
     meta_dict = ds_obj.GetMetadata()
     rel_orbit = meta_dict.get("RELATIVE_ORBIT_NUMBER")
     orbit_dir = meta_dict.get("PASS_DIRECTION")
-    
+
     platform_match = re.search(r"(S2[ABC])_", product_uri)
     platform = platform_match.group(1) if platform_match else "S2"
 
@@ -862,6 +865,7 @@ def run_pipeline(
         relative_orbit=rel_orbit,
         orbit_direction=orbit_dir,
         platform=platform,
+        footprint=footprint,
     )
 
     # AIS Correlation
