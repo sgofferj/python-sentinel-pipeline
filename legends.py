@@ -220,11 +220,47 @@ def get_s3_fire_legend():
 
 
 def get_s1_delta_legend():
-    """Returns HTML for S1 Delta (change) legend — turbo palette, gate at 0.7 dB."""
-    # Turbo palette from legends.py:17 (RADAR-BURN) — dark blue (-3) to dark red (+3), 0 ~ green/yellow
-    turbo = "linear-gradient(to right, #30123b, #4662d8, #36aaf9, #1ae4b6, #a4fc3c, #fbb318, #e4460a, #7a0403)"
-    # Viridis alternative: linear-gradient(to right, #440154, #482777, #3e4989, #31688e, #26828e, #35b779, #6ece58, #b5de2b, #fde725)
-    palette = turbo if c.S1_DELTA_PALETTE.lower() == "turbo" else ("linear-gradient(to right, #440154, #482777, #3e4989, #31688e, #26828e, #35b779, #6ece58, #b5de2b, #fde725)" if c.S1_DELTA_PALETTE.lower() == "viridis" else "linear-gradient(to right, #a50026, #d73027, #f46d43, #fdae61, #fee08b, #ffffbf, #d9ef8b, #a6d96a, #66bd63, #1a9850, #006837)")
+    """Returns HTML for S1 Delta (change) legend — magnitude 0→max, gate at 2.0 dB."""
+    pal = c.S1_DELTA_PALETTE.lower()
+    if pal == "turbo":
+        palette = "linear-gradient(to right, #30123b, #4662d8, #36aaf9, #1ae4b6, #a4fc3c, #fbb318, #e4460a, #7a0403)"
+        labels = ("Removed", "Stable", "New")
+    elif pal == "viridis":
+        palette = "linear-gradient(to right, #440154, #482777, #3e4989, #31688e, #26828e, #35b779, #6ece58, #b5de2b, #fde725)"
+        labels = ("Removed", "Stable", "New")
+    elif pal in ("grey-red", "grey_red"):
+        palette = "linear-gradient(to right, #232323, #5a1a1a, #b41e1e, #e05a33, #b41e1e)"
+        # grey 35,35,35 at 0 -> red 180,30,30 at max, via 80,35,35 etc.
+        palette = "linear-gradient(to right, #232323, #501e1e, #8a2323, #c03030, #e05a33, #b41e1e)"
+        labels = ("Stable", "Change", "Strong")
+    elif pal == "grey-rdbu":
+        palette = "linear-gradient(to right, #232323, #3a4a6b, #4a6bb8, #8a2323, #b41e1e)"
+        labels = ("Stable", "Change", "Strong")
+    else:  # rdylgn
+        palette = "linear-gradient(to right, #a50026, #d73027, #f46d43, #fdae61, #fee08b, #ffffbf, #d9ef8b, #a6d96a, #66bd63, #1a9850, #006837)"
+        labels = ("Removed", "Stable", "New")
+    # For magnitude |Δ| the legend is 0 -> max, otherwise -max -> +max
+    is_mag = pal in ("grey-red", "grey_red", "grey-rdbu")
+    if is_mag:
+        return f"""
+    <div class="legend-box" style="padding: 10px; background: rgba(0,0,0,0.8); color: white; border-radius: 5px; font-family: monospace; font-size: 12px;">
+        <div style="font-weight: bold; margin-bottom: 5px; color: #ffeb3b;">S1 DELTA (|VV| Change dB)</div>
+        <div style="height: 12px; width: 200px; background: {palette}; border: 1px solid #444;"></div>
+        <div style="display: flex; justify-content: space-between; width: 200px; margin-top: 2px;">
+            <span>0</span>
+            <span>{c.S1_DELTA_GATE_DB:.1f}</span>
+            <span>{c.S1_DELTA_MAX:.1f}</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; width: 200px; margin-top: 2px; font-size: 10px; color: #aaa;">
+            <span>Stable</span>
+            <span>Gate</span>
+            <span>Strong</span>
+        </div>
+        <div style="margin-top: 5px; font-size: 10px; color: #aaa;">
+            |VV<sub>t</sub> − VV<sub>t-1</sub>| (same orbit, {c.S1_DELTA_PALETTE}, gate {c.S1_DELTA_GATE_DB:.1f}dB). Grey = no change, red = strong change.
+        </div>
+    </div>
+    """
     return f"""
     <div class="legend-box" style="padding: 10px; background: rgba(0,0,0,0.8); color: white; border-radius: 5px; font-family: monospace; font-size: 12px;">
         <div style="font-weight: bold; margin-bottom: 5px; color: #ffeb3b;">S1 DELTA (VV Change dB)</div>
@@ -235,9 +271,9 @@ def get_s1_delta_legend():
             <span>+{c.S1_DELTA_MAX:.1f}</span>
         </div>
         <div style="display: flex; justify-content: space-between; width: 200px; margin-top: 2px; font-size: 10px; color: #aaa;">
-            <span>Removed</span>
-            <span>Stable</span>
-            <span>New</span>
+            <span>{labels[0]}</span>
+            <span>{labels[1]}</span>
+            <span>{labels[2]}</span>
         </div>
         <div style="margin-top: 5px; font-size: 10px; color: #aaa;">
             VV<sub>t</sub> − VV<sub>t-1</sub> (same orbit). Red = loss, Green = new backscatter.

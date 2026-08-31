@@ -69,6 +69,18 @@ _DELTA_PALETTES = {
         "g": np.array([0, 48, 109, 174, 255, 239, 217, 189, 104]),
         "b": np.array([38, 39, 67, 97, 191, 139, 109, 99, 55]),
     },
+    "grey-rdbu": {
+        "values": np.array([-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0]),
+        "r": np.array([40, 45, 50, 45, 35, 70, 110, 150, 180]),
+        "g": np.array([70, 60, 50, 42, 35, 35, 35, 35, 30]),
+        "b": np.array([160, 140, 120, 80, 35, 35, 35, 35, 30]),
+    },
+    "grey-red": {
+        "values": np.array([0.0, 0.33, 0.66, 1.0]),
+        "r": np.array([35, 80, 130, 180]),
+        "g": np.array([35, 35, 35, 30]),
+        "b": np.array([35, 35, 35, 30]),
+    },
 }
 
 
@@ -229,11 +241,12 @@ def _compute_delta_pair(
                 # Also store delta params
                 dst_ana.update_tags(DELTA_VH_THRESH=str(c.S1_DELTA_VH_THRESH))
 
-            # Visual: signed delta, stable (|Δ|<gate) is middle colour (0 dB) opaque
-            vmin, vmax = c.S1_DELTA_MIN, c.S1_DELTA_MAX
-            delta_clipped = np.clip(delta, vmin, vmax)
-            r, g, b = _delta_to_rgb(delta_clipped, vmin, vmax)
-            gated = valid & (np.abs(delta) >= c.S1_DELTA_GATE_DB)
+            # Visual: magnitude |Δ|, stable is grey (0) opaque
+            vmin, vmax = 0.0, c.S1_DELTA_MAX
+            abs_delta = np.abs(delta)
+            abs_clipped = np.clip(abs_delta, vmin, vmax)
+            r, g, b = _delta_to_rgb(abs_clipped, vmin, vmax)
+            gated = valid & (abs_delta >= c.S1_DELTA_GATE_DB)
             r_mid, g_mid, b_mid = _delta_to_rgb(np.array([0.0], dtype=np.float32), vmin, vmax)
             r_mid, g_mid, b_mid = int(r_mid[0]), int(g_mid[0]), int(b_mid[0])
             alpha = np.where(valid, 255, 0).astype(np.uint8)

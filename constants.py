@@ -147,8 +147,8 @@ S1_DELTA_MIN: float = float(os.getenv("S1_DELTA_MIN", "-3.0"))
 S1_DELTA_MAX: float = float(os.getenv("S1_DELTA_MAX", "3.0"))
 S1_DELTA_DAYS: int = int(os.getenv("S1_DELTA_DAYS", "14"))
 S1_DELTA_VH_THRESH: float = float(os.getenv("S1_DELTA_VH_THRESH", "-25.0"))
-S1_DELTA_GATE_DB: float = float(os.getenv("S1_DELTA_GATE_DB", "0.7"))
-S1_DELTA_PALETTE: str = os.getenv("S1_DELTA_PALETTE", "turbo")  # turbo, viridis, RdYlGn
+S1_DELTA_GATE_DB: float = float(os.getenv("S1_DELTA_GATE_DB", "2.0"))
+S1_DELTA_PALETTE: str = os.getenv("S1_DELTA_PALETTE", "grey-red")  # turbo, viridis, rdylgn, grey-rdbu, grey-red (magnitude)
 
 # ----- NDVI Integrated Palette (from ndvi2.txt) ---------------------
 NDVI_PALETTE: Dict[str, np.ndarray] = {
