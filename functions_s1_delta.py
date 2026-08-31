@@ -241,18 +241,50 @@ def _compute_delta_pair(
                 # Also store delta params
                 dst_ana.update_tags(DELTA_VH_THRESH=str(c.S1_DELTA_VH_THRESH))
 
-            # Visual: magnitude |Δ|, stable is grey (0) opaque
+            # Visual: magnitude |Δ|, water needs higher gate + VH ship filter
             vmin, vmax = 0.0, c.S1_DELTA_MAX
             abs_delta = np.abs(delta)
             abs_clipped = np.clip(abs_delta, vmin, vmax)
             r, g, b = _delta_to_rgb(abs_clipped, vmin, vmax)
-            gated = valid & (abs_delta >= c.S1_DELTA_GATE_DB)
+            gated = None
+            try:
+                import water_mask
+
+                wmask = water_mask.get_water_mask(bbox_str, resolution=15.0, crs="EPSG:3857")
+                if wmask is not None:
+                    if wmask.shape != valid.shape:
+                        try:
+                            from scipy.ndimage import zoom  # type: ignore
+
+                            zy = valid.shape[0] / wmask.shape[0]
+                            zx = valid.shape[1] / wmask.shape[1]
+                            wmask = zoom(wmask, (zy, zx), order=0)[: valid.shape[0], : valid.shape[1]]
+                            if wmask.shape != valid.shape:
+                                wmask = np.resize(wmask, valid.shape)
+                        except Exception:
+                            wmask = np.resize(wmask, valid.shape)
+                    wbool = wmask.astype(bool)
+                    land_gated = (~wbool & valid) & (abs_delta >= c.S1_DELTA_GATE_DB)
+                    if vh_db is not None:
+                        water_gated = (wbool & valid) & (abs_delta >= 3.0) & (vh_db > -15.0)
+                    else:
+                        water_gated = (wbool & valid) & (abs_delta >= 3.0)
+                    gated = land_gated | water_gated
+            except Exception as e:
+                print(f"Water mask gating fallback: {e}", flush=True)
+            if gated is None:
+                gated = valid & (abs_delta >= c.S1_DELTA_GATE_DB)
             r_mid, g_mid, b_mid = _delta_to_rgb(np.array([0.0], dtype=np.float32), vmin, vmax)
             r_mid, g_mid, b_mid = int(r_mid[0]), int(g_mid[0]), int(b_mid[0])
-            alpha = np.where(valid, 255, 0).astype(np.uint8)
-            r = np.where(gated, r, np.where(valid, r_mid, 0)).astype(np.uint8)
-            g = np.where(gated, g, np.where(valid, g_mid, 0)).astype(np.uint8)
-            b = np.where(gated, b, np.where(valid, b_mid, 0)).astype(np.uint8)
+            # TIF for viewer: grey transparent, gated with alpha ramp 80->255
+            alpha_ramp = np.zeros_like(abs_delta, dtype=np.uint8)
+            if np.any(gated):
+                ramp = 80 + (np.clip(abs_delta, c.S1_DELTA_GATE_DB, vmax) - c.S1_DELTA_GATE_DB) / (vmax - c.S1_DELTA_GATE_DB) * 175
+                alpha_ramp[gated] = ramp[gated].astype(np.uint8)
+            alpha = alpha_ramp.astype(np.uint8)
+            r = np.where(gated, r, 0).astype(np.uint8)
+            g = np.where(gated, g, 0).astype(np.uint8)
+            b = np.where(gated, b, 0).astype(np.uint8)
 
             vis_profile = profile.copy()
             vis_profile.update(

@@ -350,18 +350,56 @@ def _compute_roi_delta(
             del vv_new_lin, vv_old_lin
             gc.collect()
             # Visual: magnitude |Δ|, stable (|Δ|<gate) is grey (0) opaque
-            # |Δ| 0→3 grey 35,35,35 → red 180,30,30 (grey-rdbu), no yellow, no sign
+            # Water uses higher gate + VH ship filter so rough water stays grey and only ships go red
             vmin, vmax = 0.0, c.S1_DELTA_MAX
             abs_delta = np.abs(delta)
             abs_clipped = np.clip(abs_delta, vmin, vmax)
             r, g, b = _delta_to_rgb(abs_clipped, vmin, vmax)
-            gated = valid & (abs_delta >= c.S1_DELTA_GATE_DB)
+            # Water-aware gating: land gate 2.0, water gate 3.0 + VH>-15 (ship)
+            gated = None
+            try:
+                import water_mask
+                wmask = water_mask.get_water_mask(bbox_str, resolution=15.0, crs="EPSG:3857")
+                if wmask is not None:
+                    if wmask.shape != valid.shape:
+                        # Resize via nearest-neighbour using numpy repeat for 1-2px mismatches
+                        # (Kronstadt 2672x2079 vs water mask 2672x2079 should match; keep fallback)
+                        try:
+                            from scipy.ndimage import zoom  # type: ignore
+
+                            zy = valid.shape[0] / wmask.shape[0]
+                            zx = valid.shape[1] / wmask.shape[1]
+                            wmask = zoom(wmask, (zy, zx), order=0)[: valid.shape[0], : valid.shape[1]]
+                            if wmask.shape != valid.shape:
+                                wmask = np.resize(wmask, valid.shape)
+                        except Exception:
+                            wmask = np.resize(wmask, valid.shape)
+                    wbool = wmask.astype(bool)
+                    land_gated = (~wbool & valid) & (abs_delta >= c.S1_DELTA_GATE_DB)
+                    if vh_db is not None:
+                        water_gated = (wbool & valid) & (abs_delta >= 3.0) & (vh_db > -15.0)
+                    else:
+                        water_gated = (wbool & valid) & (abs_delta >= 3.0)
+                    gated = land_gated | water_gated
+            except Exception as e:
+                print(f"Water mask gating fallback: {e}", flush=True)
+            if gated is None:
+                gated = valid & (abs_delta >= c.S1_DELTA_GATE_DB)
+            # For TIF (viewer): grey is transparent, gated has alpha ramp 80->255 with palette
+            # For social: grey stays grey opaque (handled in create_social_image/create_full_image)
             r_mid, g_mid, b_mid = _delta_to_rgb(np.array([0.0], dtype=np.float32), vmin, vmax)
             r_mid, g_mid, b_mid = int(r_mid[0]), int(g_mid[0]), int(b_mid[0])
-            alpha = np.where(valid, 255, 0).astype(np.uint8)
-            r = np.where(gated, r, np.where(valid, r_mid, 0)).astype(np.uint8)
-            g = np.where(gated, g, np.where(valid, g_mid, 0)).astype(np.uint8)
-            b = np.where(gated, b, np.where(valid, b_mid, 0)).astype(np.uint8)
+            # Alpha ramp for viewer: 0 for stable/transparent, 80-255 for gated proportional to |Δ|
+            alpha_ramp = np.zeros_like(abs_delta, dtype=np.uint8)
+            if np.any(gated):
+                # Map |Δ| gate..vmax -> 80..255
+                ramp = 80 + (np.clip(abs_delta, c.S1_DELTA_GATE_DB, vmax) - c.S1_DELTA_GATE_DB) / (vmax - c.S1_DELTA_GATE_DB) * 175
+                alpha_ramp[gated] = ramp[gated].astype(np.uint8)
+            # TIF alpha is ramp (transparent grey)
+            alpha = alpha_ramp.astype(np.uint8)
+            r = np.where(gated, r, 0).astype(np.uint8)
+            g = np.where(gated, g, 0).astype(np.uint8)
+            b = np.where(gated, b, 0).astype(np.uint8)
             vis_profile = profile.copy()
             vis_profile.update(driver="GTiff", dtype=rio.uint8, count=4, compress="DEFLATE", tiled=True, blockxsize=256, blockysize=256, photometric="RGB", nodata=None, BIGTIFF="YES", num_threads=2)
             with rio.open(vis_out, "w", **vis_profile) as dst_vis:
@@ -447,16 +485,27 @@ def _stamp_image(img: Image.Image, acq_old: str, acq_new: str, orbit_dir: Option
 def create_social_image(src_path: str, base_dst_path: str, stamp_acq_old: Optional[str] = None, stamp_acq_new: Optional[str] = None, stamp_orbit: Optional[str] = None) -> str:
     """
     Creates a non-georeferenced HEIC image from a TIFF for Bluesky.
-    Iteratively scales and compresses to stay under Bluesky's 2MB limit.
-    Returns the path to the created image.
+    For S1-DELTA the TIF has grey transparent (alpha 0) and red gated with
+    alpha ramp 80-255. Social image should have grey opaque (35,35,35) background
+    so it is standalone, not basemap-dependent.
     """
     try:
         with Image.open(src_path) as img:
-            # Convert to RGB (remove alpha/extras if any)
-            if img.mode != "RGB":
-                rgb_img = img.convert("RGB")
+            # For DELTA, composite transparent grey over opaque grey background
+            if "DELTA" in os.path.basename(src_path).upper():
+                if img.mode != "RGBA":
+                    img = img.convert("RGBA")
+                # Create grey background 35,35,35 opaque
+                grey_bg = Image.new("RGBA", img.size, (35, 35, 35, 255))
+                # Composite TIF (with transparent grey) over grey background
+                # This makes stable areas grey and gated red with ramp, as intended for social
+                comp = Image.alpha_composite(grey_bg, img)
+                rgb_img = comp.convert("RGB")
             else:
-                rgb_img = img
+                if img.mode != "RGB":
+                    rgb_img = img.convert("RGB")
+                else:
+                    rgb_img = img
             # Stamp delta metadata on social images
             if stamp_acq_old and stamp_acq_new:
                 rgb_img = _stamp_image(rgb_img, stamp_acq_old, stamp_acq_new, stamp_orbit).convert("RGB")
@@ -500,14 +549,21 @@ def create_social_image(src_path: str, base_dst_path: str, stamp_acq_old: Option
 def create_full_image(src_path: str, base_dst_path: str, stamp_acq_old: Optional[str] = None, stamp_acq_new: Optional[str] = None, stamp_orbit: Optional[str] = None) -> str:
     """
     Creates a full-size non-georeferenced JPEG from a TIFF.
-    Returns the path to the created image.
+    For DELTA, transparent grey becomes opaque grey for standalone JPEG.
     """
     try:
         with Image.open(src_path) as img:
-            if img.mode != "RGB":
-                rgb_img = img.convert("RGB")
+            if "DELTA" in os.path.basename(src_path).upper():
+                if img.mode != "RGBA":
+                    img = img.convert("RGBA")
+                grey_bg = Image.new("RGBA", img.size, (35, 35, 35, 255))
+                comp = Image.alpha_composite(grey_bg, img)
+                rgb_img = comp.convert("RGB")
             else:
-                rgb_img = img
+                if img.mode != "RGB":
+                    rgb_img = img.convert("RGB")
+                else:
+                    rgb_img = img
             # Stamp delta metadata on social images
             if stamp_acq_old and stamp_acq_new:
                 rgb_img = _stamp_image(rgb_img, stamp_acq_old, stamp_acq_new, stamp_orbit).convert("RGB")
