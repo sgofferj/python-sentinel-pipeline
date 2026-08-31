@@ -313,9 +313,9 @@ def _compute_roi_delta(
                         vh_db[m] = 10 * np.log10(vh_lin[m])
                 except Exception:
                     vh_db = None
+            # Valid is VV>0 on both dates (inside swath). VH is not used to mask
+            # water to transparent — water with no change is middle colour, not see-through
             valid = (vv_new_lin > 0) & (vv_old_lin > 0)
-            if vh_db is not None:
-                valid &= vh_db > c.S1_DELTA_VH_THRESH
             delta = np.zeros_like(vv_new_lin, dtype=np.float32)
             if _HAS_CUPY and _cp is not None:
                 try:
@@ -337,15 +337,21 @@ def _compute_roi_delta(
 
             del vv_new_lin, vv_old_lin
             gc.collect()
-            # Visual
+            # Visual: signed delta, stable (|Δ|<gate) is middle colour (0 dB) opaque
+            # Water is also valid (VH mask only for analysis, not for visual alpha)
+            # so the whole ROI inside the swath is opaque and the ramp is -3 violet -> 0 teal -> +3 yellow
             vmin, vmax = c.S1_DELTA_MIN, c.S1_DELTA_MAX
             delta_clipped = np.clip(delta, vmin, vmax)
             r, g, b = _delta_to_rgb(delta_clipped, vmin, vmax)
             gated = valid & (np.abs(delta) >= c.S1_DELTA_GATE_DB)
-            alpha = np.where(gated, 255, 0).astype(np.uint8)
-            r = np.where(gated, r, 0).astype(np.uint8)
-            g = np.where(gated, g, 0).astype(np.uint8)
-            b = np.where(gated, b, 0).astype(np.uint8)
+            # Middle colour at 0 dB for stable valid pixels
+            r_mid, g_mid, b_mid = _delta_to_rgb(np.array([0.0], dtype=np.float32), vmin, vmax)
+            r_mid, g_mid, b_mid = int(r_mid[0]), int(g_mid[0]), int(b_mid[0])
+            # Alpha: all valid inside swath opaque (including water, stable land)
+            alpha = np.where(valid, 255, 0).astype(np.uint8)
+            r = np.where(gated, r, np.where(valid, r_mid, 0)).astype(np.uint8)
+            g = np.where(gated, g, np.where(valid, g_mid, 0)).astype(np.uint8)
+            b = np.where(gated, b, np.where(valid, b_mid, 0)).astype(np.uint8)
             vis_profile = profile.copy()
             vis_profile.update(driver="GTiff", dtype=rio.uint8, count=4, compress="DEFLATE", tiled=True, blockxsize=256, blockysize=256, photometric="RGB", nodata=None, BIGTIFF="YES", num_threads=2)
             with rio.open(vis_out, "w", **vis_profile) as dst_vis:

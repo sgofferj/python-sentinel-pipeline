@@ -176,11 +176,8 @@ def _compute_delta_pair(
                 except Exception:
                     vh_db = None
 
-            # Compute delta in dB where both valid
+            # Valid is VV>0 on both dates (inside swath). VH not used to mask water
             valid = (vv_new_lin > 0) & (vv_old_lin > 0)
-            if vh_db is not None:
-                valid &= vh_db > c.S1_DELTA_VH_THRESH
-
             delta = np.zeros_like(vv_new_lin, dtype=np.float32)
             if HAS_CUDA:
                 try:
@@ -232,18 +229,17 @@ def _compute_delta_pair(
                 # Also store delta params
                 dst_ana.update_tags(DELTA_VH_THRESH=str(c.S1_DELTA_VH_THRESH))
 
-            # Visual output: RGBA diverge
+            # Visual: signed delta, stable (|Δ|<gate) is middle colour (0 dB) opaque
             vmin, vmax = c.S1_DELTA_MIN, c.S1_DELTA_MAX
-            # Clip delta for colormap but keep analytic unclipped
             delta_clipped = np.clip(delta, vmin, vmax)
-            # Map to RGB only where valid, else 0
             r, g, b = _delta_to_rgb(delta_clipped, vmin, vmax)
-            # Gate: |delta| < gate -> transparent (suppresses speckle noise)
             gated = valid & (np.abs(delta) >= c.S1_DELTA_GATE_DB)
-            alpha = np.where(gated, 255, 0).astype(np.uint8)
-            r = np.where(gated, r, 0).astype(np.uint8)
-            g = np.where(gated, g, 0).astype(np.uint8)
-            b = np.where(gated, b, 0).astype(np.uint8)
+            r_mid, g_mid, b_mid = _delta_to_rgb(np.array([0.0], dtype=np.float32), vmin, vmax)
+            r_mid, g_mid, b_mid = int(r_mid[0]), int(g_mid[0]), int(b_mid[0])
+            alpha = np.where(valid, 255, 0).astype(np.uint8)
+            r = np.where(gated, r, np.where(valid, r_mid, 0)).astype(np.uint8)
+            g = np.where(gated, g, np.where(valid, g_mid, 0)).astype(np.uint8)
+            b = np.where(gated, b, np.where(valid, b_mid, 0)).astype(np.uint8)
 
             vis_profile = profile.copy()
             vis_profile.update(
