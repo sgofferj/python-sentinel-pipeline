@@ -623,16 +623,17 @@ def get_human_name(product_type: str) -> str:
 AIS_BASE_MAP: Dict[str, str] = {
     "S1-RATIO": "S1-RATIO-AIS",
     "S2-TCI": "S2-TCI-AIS",
+    "S2-TCI-GF": "S2-TCI-AIS",  # TCI-GF is filtered TCI, also valid background for AIS
 }
 
 
 def _roi_wants_ais(roi: Dict[str, Any], base_product_type: str) -> bool:
     """True if ROI's products[] requests AIS overlay for the given base type.
 
-    base_product_type is 'S1-RATIO' or 'S2-TCI'. Handles:
+    base_product_type is 'S1-RATIO', 'S2-TCI' or 'S2-TCI-GF'. Handles:
       - generic 'AIS' (wants both)
       - 'RATIO-AIS' / 'S1-RATIO-AIS' / 'RATIOVVVH-AIS' → S1
-      - 'TCI-AIS' / 'S2-TCI-AIS' → S2
+      - 'TCI-AIS' / 'S2-TCI-AIS' / 'TCI-GF-AIS' → S2
     Normalises hyphens/underscores and is case-insensitive.
     """
     for p in roi.get("products", []):
@@ -645,7 +646,7 @@ def _roi_wants_ais(roi: Dict[str, Any], base_product_type: str) -> bool:
         if base_product_type == "S1-RATIO":
             if "RATIO" in norm or "S1" in norm:
                 return True
-        elif base_product_type == "S2-TCI":
+        elif base_product_type in ("S2-TCI", "S2-TCI-GF"):
             if "TCI" in norm or "S2" in norm:
                 return True
     return False
@@ -1371,6 +1372,27 @@ def run_roi_stage(
                                 flush=True,
                             )
                     else:
+                        # GF priority: S2-TCI-GF takes precedence over S2-TCI for AIS
+                        if product_type == "S2-TCI":
+                            gf_key = (date_part, rel_orbit, orbit_dir, "S2-TCI-GF")
+                            gf_layers = grouped_layers.get(gf_key, [])
+                            if gf_layers:
+                                try:
+                                    gf_cov = calculate_coverage(roi_bbox, gf_layers, roi_poly=roi_poly)
+                                    if gf_cov >= roi_match_threshold:
+                                        if dry_run:
+                                            print(
+                                                f"  [dry-run] ROI {roi_name} AIS for S2-TCI skipped, S2-TCI-GF has priority (filtered, {gf_cov:.1f}% >= {roi_match_threshold}%)",
+                                                flush=True,
+                                            )
+                                        else:
+                                            print(
+                                                f"ROI {roi_name} AIS for S2-TCI skipped, S2-TCI-GF has priority.",
+                                                flush=True,
+                                            )
+                                        continue
+                                except Exception:
+                                    pass
                         # Need per-ROI AIS - only the ROI bbox
                         if dry_run:
                             print(
