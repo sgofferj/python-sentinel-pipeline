@@ -19,6 +19,7 @@ import argparse
 import json
 import math
 import os
+import sys
 import tempfile
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
@@ -40,6 +41,11 @@ import notifications as notify
 import cog_finalizer as cog
 import numpy as np
 import rasterio as rio
+
+# --- AIS Correlator (optional, for per-ROI fallback) ---
+AIS_DIR = os.path.join(os.path.dirname(__file__), "ais-correlator")
+if os.path.exists(AIS_DIR) and AIS_DIR not in sys.path:
+    sys.path.append(AIS_DIR)
 
 # Register HEIF opener for Pillow
 pillow_heif.register_heif_opener()
@@ -613,6 +619,38 @@ def get_human_name(product_type: str) -> str:
     return rest
 
 
+# --- AIS per-ROI fallback ---
+AIS_BASE_MAP: Dict[str, str] = {
+    "S1-RATIO": "S1-RATIO-AIS",
+    "S2-TCI": "S2-TCI-AIS",
+}
+
+
+def _roi_wants_ais(roi: Dict[str, Any], base_product_type: str) -> bool:
+    """True if ROI's products[] requests AIS overlay for the given base type.
+
+    base_product_type is 'S1-RATIO' or 'S2-TCI'. Handles:
+      - generic 'AIS' (wants both)
+      - 'RATIO-AIS' / 'S1-RATIO-AIS' / 'RATIOVVVH-AIS' → S1
+      - 'TCI-AIS' / 'S2-TCI-AIS' → S2
+    Normalises hyphens/underscores and is case-insensitive.
+    """
+    for p in roi.get("products", []):
+        up = str(p).upper().strip()
+        norm = up.replace("-", "_").replace(" ", "_")
+        if "AIS" not in norm:
+            continue
+        if norm == "AIS":
+            return True
+        if base_product_type == "S1-RATIO":
+            if "RATIO" in norm or "S1" in norm:
+                return True
+        elif base_product_type == "S2-TCI":
+            if "TCI" in norm or "S2" in norm:
+                return True
+    return False
+
+
 BASEMAP_CACHE: str = os.path.join(c.BASE_DIR, "temp", "basemap_cache")
 BASEMAP_TILE_URL: str = (
     "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile"
@@ -1076,7 +1114,12 @@ def run_roi_stage(
                     match_found = True
                     break
 
-            if not match_found:
+            # Per-ROI AIS: does this ROI want an AIS overlay for this base product?
+            wants_ais_for_base = False
+            if product_type in AIS_BASE_MAP:
+                wants_ais_for_base = _roi_wants_ais(roi, product_type)
+
+            if not match_found and not wants_ais_for_base:
                 continue
 
             # Optimization: Check if any single tile in the group satisfies the ROI
@@ -1110,51 +1153,8 @@ def run_roi_stage(
                     effective_coverage = combined_coverage
 
             if best_src_paths:
-                # Use full product type (excluding sensor prefix)
-                p_suffix = (
-                    product_type.split("-", 1)[1]
-                    if "-" in product_type
-                    else product_type
-                )
-
-                dst_filename = f"{roi_name}_{p_suffix}_{iso_clean}.tif"
-                dst_path = os.path.join(c.DIRS["VIS_ROI"], dst_filename)
-
-                print(
-                    f"ROI Match: {roi_name} ({effective_coverage:.1f}%) -> "
-                    f"Cropping {dst_filename} ({len(best_src_paths)} tiles)",
-                    flush=True,
-                )
-                if dry_run:
-                    detail = "crop and sidecar"
-                    if product_type.startswith("S3-"):
-                        if roi.get("thermal_monitor", False):
-                            detail += (
-                                ", thermal anomaly check "
-                                "(notifications only if anomaly detected)"
-                            )
-                        else:
-                            detail += (
-                                ", no notifications "
-                                "(S3 products skip posting unless thermal "
-                                "monitoring is enabled)"
-                            )
-                    else:
-                        detail += (
-                            ", notifications "
-                            "(Apprise/Bluesky per ROI config)"
-                        )
-                    print(
-                        f"  [dry-run] would {detail} for {dst_filename}",
-                        flush=True,
-                    )
-                    continue
-                if not crop_product(best_src_paths, dst_path, roi_bbox):
-                    continue
-
-                # Generate sidecar for the new crop
+                # Precompute footprint_geom for reuse (base and per-ROI AIS)
                 sat_val = layers[0].get("satellite")
-                # Fast footprint: intersect parent footprint(s) with ROI bbox (avoids raster vectorisation)
                 parent_layers_fp = [best_single_layer] if (best_single_layer and max_single_coverage >= roi_match_threshold) else layers
                 footprint_geom = None
                 try:
@@ -1180,116 +1180,386 @@ def run_roi_stage(
                             footprint_geom = _inter
                 except Exception:
                     footprint_geom = None
-                meta.generate_sidecar(
-                    dst_path,
-                    f"ROI-{roi_name}-{p_suffix}",
-                    product_type,
-                    effective_res=resolution,
-                    cloud_cover=avg_cloud_cover,
-                    relative_orbit=rel_orbit,
-                    orbit_direction=orbit_dir,
-                    satellite=sat_val,
-                    footprint=footprint_geom,
-                )
-                crops_created += 1
 
-                # Thermal monitoring: check S3-BT analytic data for hot spots
-                thermal_alert = False
-                thermal_checked = False
-                if product_type.startswith("S3-"):
-                    thermal_enabled = roi.get("thermal_monitor", False)
-                    if thermal_enabled:
-                        thermal_checked = True
-                        threshold = roi.get("thermal_threshold", 310.0)
-                        ana_src = [
-                            p.replace("/visual/", "/analytic/") for p in best_src_paths
-                        ]
-                        ana_src = [p for p in ana_src if os.path.exists(p)]
-                        if ana_src:
-                            thermal_alert = check_thermal_anomaly(
-                                ana_src,
-                                roi_bbox,
-                                roi_name,
-                                base_acq_time,
-                                threshold,
-                                roi.get("apprise_url", ""),
+                # --- Base product crop (if ROI explicitly wants this product_type) ---
+                base_dst_path = None
+                base_p_suffix = (
+                    product_type.split("-", 1)[1]
+                    if "-" in product_type
+                    else product_type
+                )
+                base_dst_filename = f"{roi_name}_{base_p_suffix}_{iso_clean}.tif"
+                base_dst_path_tmp = os.path.join(c.DIRS["VIS_ROI"], base_dst_filename)
+
+                if match_found:
+                    print(
+                        f"ROI Match: {roi_name} ({effective_coverage:.1f}%) -> "
+                        f"Cropping {base_dst_filename} ({len(best_src_paths)} tiles)",
+                        flush=True,
+                    )
+                    if dry_run:
+                        detail = "crop and sidecar"
+                        if product_type.startswith("S3-"):
+                            if roi.get("thermal_monitor", False):
+                                detail += (
+                                    ", thermal anomaly check "
+                                    "(notifications only if anomaly detected)"
+                                )
+                            else:
+                                detail += (
+                                    ", no notifications "
+                                    "(S3 products skip posting unless thermal "
+                                    "monitoring is enabled)"
+                                )
+                        else:
+                            detail += (
+                                ", notifications "
+                                "(Apprise/Bluesky per ROI config)"
                             )
-
-                # Delete all-transparent FIRE crops when no thermal anomaly
-                if "FIRE" in product_type and thermal_checked and not thermal_alert:
-                    os.remove(dst_path)
-                    json_path = dst_path.replace(".tif", ".json")
-                    if os.path.exists(json_path):
-                        os.remove(json_path)
-                    crops_created -= 1
-
-                # Apprise and Bluesky posting
-                apprise_url = roi.get("apprise_url", "")
-                social_needed = bsky_post_enabled and roi_name_raw in bsky_roi_names
-
-                # Skip image posts for S3 thermal products unless anomaly detected
-                if product_type.startswith("S3-") and not thermal_alert:
-                    apprise_url = ""
-                    social_needed = False
-                    func.perf_logger.log_info(
-                        f"Skipping Apprise/Bluesky for {roi_name} {product_type}: "
-                        "no thermal anomaly detected"
-                    )
-
-                # Composite thermal crop on basemap for anomaly posts
-                post_path = dst_path
-                if thermal_alert and product_type.startswith("S3-"):
-                    basemap_path = fetch_roi_basemap(roi_bbox, roi_name)
-                    if basemap_path:
-                        comp_path = dst_path.replace(".tif", "_comp.png")
-                        post_path = _composite_thermal(
-                            basemap_path, dst_path, comp_path
+                        print(
+                            f"  [dry-run] would {detail} for {base_dst_filename}",
+                            flush=True,
                         )
-
-                social_base = os.path.join(
-                    c.DIRS["VIS_ROI"],
-                    f"{roi_name}_{p_suffix}_{iso_clean}_social",
-                )
-
-                # Apprise gets full size JPEG
-                if apprise_url:
-                    func.perf_logger.log_info(
-                        f"Creating full-size JPEG for {roi_name} {p_suffix}"
-                    )
-                    full_image = create_full_image(post_path, social_base)
-                    if full_image:
-                        human_prod = get_human_name(product_type)
-                        msg = (
-                            f"New {human_prod} image for ROI {roi_name}\n"
-                            f"Acquired: {base_acq_time}\n"
-                            f"Satellite: {constellation}"
-                        )
-                        func.perf_logger.log_info(
-                            f"Sending Apprise notification for {roi_name} {p_suffix}"
-                        )
-                        notify.send_notification(
-                            message=msg,
-                            title=f"ROI Update: {roi_name}",
-                            urls=apprise_url,
-                            attachment=full_image,
-                        )
+                        # Do not continue; still evaluate per-ROI AIS fallback for dry-run
+                        base_dst_path = base_dst_path_tmp
                     else:
-                        func.perf_logger.log_info(
-                            f"Failed to create full-size JPEG for {roi_name} {p_suffix}"
-                        )
+                        if not crop_product(best_src_paths, base_dst_path_tmp, roi_bbox):
+                            base_dst_path = None
+                        else:
+                            meta.generate_sidecar(
+                                base_dst_path_tmp,
+                                f"ROI-{roi_name}-{base_p_suffix}",
+                                product_type,
+                                effective_res=resolution,
+                                cloud_cover=avg_cloud_cover,
+                                relative_orbit=rel_orbit,
+                                orbit_direction=orbit_dir,
+                                satellite=sat_val,
+                                footprint=footprint_geom,
+                            )
+                            crops_created += 1
+                            base_dst_path = base_dst_path_tmp
 
-                # Bluesky gets downscaled social image
-                if social_needed:
-                    image_path = create_social_image(post_path, social_base)
-                    if image_path:
-                        post_to_bsky(
-                            config,
-                            roi_name,
-                            product_type,
-                            base_acq_time,
-                            constellation,
-                            image_path,
-                        )
+                            # Thermal monitoring: check S3-BT analytic data for hot spots
+                            thermal_alert = False
+                            thermal_checked = False
+                            if product_type.startswith("S3-"):
+                                thermal_enabled = roi.get("thermal_monitor", False)
+                                if thermal_enabled:
+                                    thermal_checked = True
+                                    threshold = roi.get("thermal_threshold", 310.0)
+                                    ana_src = [
+                                        p.replace("/visual/", "/analytic/") for p in best_src_paths
+                                    ]
+                                    ana_src = [p for p in ana_src if os.path.exists(p)]
+                                    if ana_src:
+                                        thermal_alert = check_thermal_anomaly(
+                                            ana_src,
+                                            roi_bbox,
+                                            roi_name,
+                                            base_acq_time,
+                                            threshold,
+                                            roi.get("apprise_url", ""),
+                                        )
+
+                            # Delete all-transparent FIRE crops when no thermal anomaly
+                            if "FIRE" in product_type and thermal_checked and not thermal_alert:
+                                if os.path.exists(base_dst_path_tmp):
+                                    os.remove(base_dst_path_tmp)
+                                json_path = base_dst_path_tmp.replace(".tif", ".json")
+                                if os.path.exists(json_path):
+                                    os.remove(json_path)
+                                crops_created -= 1
+                                base_dst_path = None
+                            else:
+                                # Apprise and Bluesky posting for base product
+                                apprise_url = roi.get("apprise_url", "")
+                                social_needed = bsky_post_enabled and roi_name_raw in bsky_roi_names
+
+                                # Skip image posts for S3 thermal products unless anomaly detected
+                                if product_type.startswith("S3-") and not thermal_alert:
+                                    apprise_url = ""
+                                    social_needed = False
+                                    func.perf_logger.log_info(
+                                        f"Skipping Apprise/Bluesky for {roi_name} {product_type}: "
+                                        "no thermal anomaly detected"
+                                    )
+
+                                # Composite thermal crop on basemap for anomaly posts
+                                post_path = base_dst_path_tmp
+                                if thermal_alert and product_type.startswith("S3-"):
+                                    basemap_path = fetch_roi_basemap(roi_bbox, roi_name)
+                                    if basemap_path:
+                                        comp_path = base_dst_path_tmp.replace(".tif", "_comp.png")
+                                        post_path = _composite_thermal(
+                                            basemap_path, base_dst_path_tmp, comp_path
+                                        )
+
+                                social_base = os.path.join(
+                                    c.DIRS["VIS_ROI"],
+                                    f"{roi_name}_{base_p_suffix}_{iso_clean}_social",
+                                )
+
+                                # Apprise gets full size JPEG
+                                if apprise_url:
+                                    func.perf_logger.log_info(
+                                        f"Creating full-size JPEG for {roi_name} {base_p_suffix}"
+                                    )
+                                    full_image = create_full_image(post_path, social_base)
+                                    if full_image:
+                                        human_prod = get_human_name(product_type)
+                                        msg = (
+                                            f"New {human_prod} image for ROI {roi_name}\n"
+                                            f"Acquired: {base_acq_time}\n"
+                                            f"Satellite: {constellation}"
+                                        )
+                                        func.perf_logger.log_info(
+                                            f"Sending Apprise notification for {roi_name} {base_p_suffix}"
+                                        )
+                                        notify.send_notification(
+                                            message=msg,
+                                            title=f"ROI Update: {roi_name}",
+                                            urls=apprise_url,
+                                            attachment=full_image,
+                                        )
+                                    else:
+                                        func.perf_logger.log_info(
+                                            f"Failed to create full-size JPEG for {roi_name} {base_p_suffix}"
+                                        )
+
+                                # Bluesky gets downscaled social image
+                                if social_needed:
+                                    image_path = create_social_image(post_path, social_base)
+                                    if image_path:
+                                        post_to_bsky(
+                                            config,
+                                            roi_name,
+                                            product_type,
+                                            base_acq_time,
+                                            constellation,
+                                            image_path,
+                                        )
+                # --- Per-ROI AIS fallback (if ROI wants AIS for this base type) ---
+                if wants_ais_for_base:
+                    ais_product_type = AIS_BASE_MAP[product_type]
+                    ais_p_suffix = ais_product_type.split("-", 1)[1]
+                    dst_ais_filename = f"{roi_name}_{ais_p_suffix}_{iso_clean}.tif"
+                    dst_ais_path = os.path.join(c.DIRS["VIS_ROI"], dst_ais_filename)
+
+                    # Check if whole-scene AIS already covers this ROI
+                    ais_key = (date_part, rel_orbit, orbit_dir, ais_product_type)
+                    ais_layers = grouped_layers.get(ais_key, [])
+                    global_covers = False
+                    global_cov = 0.0
+                    if ais_layers:
+                        try:
+                            global_cov = calculate_coverage(roi_bbox, ais_layers, roi_poly=roi_poly)
+                            if global_cov >= roi_match_threshold:
+                                global_covers = True
+                        except Exception:
+                            global_covers = False
+
+                    if global_covers:
+                        if dry_run:
+                            print(
+                                f"  [dry-run] ROI {roi_name} AIS already covered by global {ais_product_type} ({global_cov:.1f}%), would crop {dst_ais_filename} via global product",
+                                flush=True,
+                            )
+                        else:
+                            print(
+                                f"ROI {roi_name} AIS already covered by global {ais_product_type} ({global_cov:.1f}%), skipping per-ROI correlation (global crop will be handled via {ais_product_type} group).",
+                                flush=True,
+                            )
+                    else:
+                        # Need per-ROI AIS - only the ROI bbox
+                        if dry_run:
+                            print(
+                                f"  [dry-run] would run per-ROI AIS correlation for {roi_name} ({ais_product_type}) on ROI bbox only -> {dst_ais_filename} (global {ais_product_type} coverage {global_cov:.1f}% < {roi_match_threshold}%)",
+                                flush=True,
+                            )
+                        else:
+                            if os.path.exists(dst_ais_path):
+                                print(
+                                    f"Per-ROI AIS {dst_ais_filename} already exists, skipping.",
+                                    flush=True,
+                                )
+                            else:
+                                # Determine base image for AIS overlay
+                                base_path_for_ais = None
+                                base_is_temp = False
+                                if base_dst_path and os.path.exists(base_dst_path):
+                                    base_path_for_ais = base_dst_path
+                                elif match_found and os.path.exists(base_dst_path_tmp):
+                                    base_path_for_ais = base_dst_path_tmp
+                                if base_path_for_ais is None or not os.path.exists(base_path_for_ais):
+                                    # Create temp base crop solely for AIS correlation
+                                    tmp_base_path = base_dst_path_tmp
+                                    if not os.path.exists(tmp_base_path):
+                                        if not crop_product(best_src_paths, tmp_base_path, roi_bbox):
+                                            print(
+                                                f"Per-ROI AIS: failed to create temp base crop for {roi_name} {product_type}",
+                                                flush=True,
+                                            )
+                                            tmp_base_path = None
+                                    if tmp_base_path and os.path.exists(tmp_base_path):
+                                        base_path_for_ais = tmp_base_path
+                                        base_is_temp = not match_found
+                                    else:
+                                        base_path_for_ais = None
+
+                                if base_path_for_ais and os.path.exists(base_path_for_ais):
+                                    try:
+                                        import ais_correlator
+
+                                        # Use ROI crop's sidecar/bounds for AIS query (ROI bbox only)
+                                        meta_ais = ais_correlator.get_metadata(base_path_for_ais)
+                                        ais_data = ais_correlator.fetch_ais_data(meta_ais)
+                                        if not ais_data:
+                                            print(
+                                                f"No AIS data for per-ROI {roi_name} {ais_product_type} ({base_acq_time}, ROI bbox)",
+                                                flush=True,
+                                            )
+                                            if base_is_temp and base_path_for_ais and os.path.exists(base_path_for_ais):
+                                                try:
+                                                    os.remove(base_path_for_ais)
+                                                    jp = base_path_for_ais.replace(".tif", ".json")
+                                                    if os.path.exists(jp):
+                                                        os.remove(jp)
+                                                except Exception:
+                                                    pass
+                                        else:
+                                            ais_correlator.plot_on_image(
+                                                base_path_for_ais, ais_data, meta_ais["time"]
+                                            )
+                                            intermediate = base_path_for_ais.replace(".tif", "_AIS.tif")
+                                            if not os.path.exists(intermediate):
+                                                print(
+                                                    f"Per-ROI AIS: plot failed, no {intermediate}",
+                                                    flush=True,
+                                                )
+                                            else:
+                                                # Move/rename intermediate to final hyphen-named product
+                                                if intermediate != dst_ais_path:
+                                                    if os.path.exists(dst_ais_path):
+                                                        try:
+                                                            os.remove(dst_ais_path)
+                                                        except Exception:
+                                                            pass
+                                                        jp2 = dst_ais_path.replace(".tif", ".json")
+                                                        if os.path.exists(jp2):
+                                                            try:
+                                                                os.remove(jp2)
+                                                            except Exception:
+                                                                pass
+                                                    try:
+                                                        os.rename(intermediate, dst_ais_path)
+                                                    except Exception as e:
+                                                        print(
+                                                            f"Per-ROI AIS rename failed {intermediate} -> {dst_ais_path}: {e}",
+                                                            flush=True,
+                                                        )
+                                                        dst_ais_path = intermediate
+                                                else:
+                                                    dst_ais_path = intermediate
+
+                                                if os.path.exists(dst_ais_path):
+                                                    cog.convert_to_cog(dst_ais_path)
+                                                    cog.ensure_overviews(dst_ais_path)
+                                                    meta.generate_sidecar(
+                                                        dst_ais_path,
+                                                        f"ROI-{roi_name}-{ais_p_suffix}",
+                                                        ais_product_type,
+                                                        effective_res=resolution,
+                                                        cloud_cover=avg_cloud_cover,
+                                                        relative_orbit=rel_orbit,
+                                                        orbit_direction=orbit_dir,
+                                                        satellite=sat_val,
+                                                        footprint=footprint_geom,
+                                                    )
+                                                    crops_created += 1
+                                                    print(
+                                                        f"Per-ROI AIS created: {dst_ais_filename} ({len(ais_data)} tracks)",
+                                                        flush=True,
+                                                    )
+
+                                                    if base_is_temp and base_path_for_ais != dst_ais_path and os.path.exists(base_path_for_ais):
+                                                        try:
+                                                            os.remove(base_path_for_ais)
+                                                            jp = base_path_for_ais.replace(".tif", ".json")
+                                                            if os.path.exists(jp):
+                                                                os.remove(jp)
+                                                        except Exception:
+                                                            pass
+
+                                                    # Notifications for per-ROI AIS
+                                                    apprise_url_ais = roi.get("apprise_url", "")
+                                                    social_needed_ais = bsky_post_enabled and roi_name_raw in bsky_roi_names
+                                                    social_base_ais = os.path.join(
+                                                        c.DIRS["VIS_ROI"],
+                                                        f"{roi_name}_{ais_p_suffix}_{iso_clean}_social",
+                                                    )
+                                                    if apprise_url_ais:
+                                                        func.perf_logger.log_info(
+                                                            f"Creating full-size JPEG for {roi_name} {ais_p_suffix} (per-ROI AIS)"
+                                                        )
+                                                        full_image_ais = create_full_image(
+                                                            dst_ais_path, social_base_ais
+                                                        )
+                                                        if full_image_ais:
+                                                            human_prod_ais = get_human_name(ais_product_type)
+                                                            msg_ais = (
+                                                                f"New {human_prod_ais} image for ROI {roi_name} (AIS per-ROI)\n"
+                                                                f"Acquired: {base_acq_time}\n"
+                                                                f"Satellite: {constellation}"
+                                                            )
+                                                            func.perf_logger.log_info(
+                                                                f"Sending Apprise notification for {roi_name} {ais_p_suffix} (per-ROI AIS)"
+                                                            )
+                                                            notify.send_notification(
+                                                                message=msg_ais,
+                                                                title=f"ROI Update: {roi_name} {ais_p_suffix}",
+                                                                urls=apprise_url_ais,
+                                                                attachment=full_image_ais,
+                                                            )
+                                                    if social_needed_ais:
+                                                        image_path_ais = create_social_image(
+                                                            dst_ais_path, social_base_ais
+                                                        )
+                                                        if image_path_ais:
+                                                            post_to_bsky(
+                                                                config,
+                                                                roi_name,
+                                                                ais_product_type,
+                                                                base_acq_time,
+                                                                constellation,
+                                                                image_path_ais,
+                                                            )
+                                                else:
+                                                    print(
+                                                        f"Per-ROI AIS final file missing: {dst_ais_path}",
+                                                        flush=True,
+                                                    )
+                                    except Exception as e:
+                                        print(
+                                            f"Per-ROI AIS correlation failed for {roi_name} {ais_product_type}: {e}",
+                                            flush=True,
+                                        )
+                                        import traceback
+
+                                        traceback.print_exc()
+                                        if base_is_temp and base_path_for_ais and os.path.exists(base_path_for_ais):
+                                            try:
+                                                os.remove(base_path_for_ais)
+                                                jp = base_path_for_ais.replace(".tif", ".json")
+                                                if os.path.exists(jp):
+                                                    os.remove(jp)
+                                            except Exception:
+                                                pass
+                                else:
+                                    print(
+                                        f"Per-ROI AIS: no base image available for {roi_name} {product_type}",
+                                        flush=True,
+                                    )
 
     # --- S1 Delta per-ROI (with combining, orbit-matched, via products[] DELTA) ---
     # Runs after normal crops, so new S1 visuals are already in inventory if needed, but delta uses VV analytics
