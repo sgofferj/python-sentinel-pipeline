@@ -15,7 +15,8 @@
       "products": [
         "TCI",
         "RATIO",
-        "NDVI"
+        "NDVI",
+        "DELTA"
       ],
       "apprise_url": "pover://user@token"
     },
@@ -25,6 +26,7 @@
       "bbox_match": 50,
       "products": [
         "RATIO",
+        "DELTA",
         "RADAR-BURN"
       ]
     }

@@ -51,6 +51,7 @@ DIRS: Dict[str, str] = {
     "VIS_S2_AP": os.path.join(OUT_BASE, "visual/s2/ap"),
     "VIS_S3_BT": os.path.join(OUT_BASE, "visual/s3/bt"),
     "VIS_S3_FIRE": os.path.join(OUT_BASE, "visual/s3/fire"),
+    "VIS_S1_DELTA": os.path.join(OUT_BASE, "visual/s1/delta"),
     "VIS_FUSED": os.path.join(OUT_BASE, "visual/fused"),
     "VIS_ROI": os.path.join(OUT_BASE, "visual/roi"),
     # --- ANALYTIC (Float32 for Change Detection) ---
@@ -140,6 +141,14 @@ S3_BT_MIN: float = 250.0  # Kelvin
 S3_BT_MAX: float = 350.0  # Kelvin
 S3_FIRE_THRESHOLD: float = 300.0  # Kelvin - minimum S7 for fire detection
 S3_CLOUD_TEMP_THRESHOLD: float = 275.0  # Kelvin - S8 temp below which = cold cloud (false fire)
+
+# ----- S1 Delta Rendering Constraints --------------------------------
+S1_DELTA_MIN: float = float(os.getenv("S1_DELTA_MIN", "-3.0"))
+S1_DELTA_MAX: float = float(os.getenv("S1_DELTA_MAX", "3.0"))
+S1_DELTA_DAYS: int = int(os.getenv("S1_DELTA_DAYS", "14"))
+S1_DELTA_VH_THRESH: float = float(os.getenv("S1_DELTA_VH_THRESH", "-25.0"))
+S1_DELTA_GATE_DB: float = float(os.getenv("S1_DELTA_GATE_DB", "2.0"))
+S1_DELTA_PALETTE: str = os.getenv("S1_DELTA_PALETTE", "grey-red")  # turbo, viridis, rdylgn, grey-rdbu, grey-red (magnitude)
 
 # ----- NDVI Integrated Palette (from ndvi2.txt) ---------------------
 NDVI_PALETTE: Dict[str, np.ndarray] = {

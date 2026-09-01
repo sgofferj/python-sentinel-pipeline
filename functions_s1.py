@@ -180,6 +180,7 @@ def _render_internal(
     relative_orbit: Optional[str] = None,
     orbit_direction: Optional[str] = None,
     platform: Optional[str] = None,
+    footprint: Optional[str] = None,
 ) -> None:
     """Macro-block threaded renderer for maximum GPU saturation using Double Buffering."""
     func.perf_logger.start_step("S1 Single-Pass Render", use_gpu=True)
@@ -396,6 +397,7 @@ def _render_internal(
                     relative_orbit=relative_orbit,
                     orbit_direction=orbit_direction,
                     satellite=platform,
+                    footprint=footprint,
                 )
 
             with ThreadPoolExecutor(
@@ -425,6 +427,7 @@ def run_pipeline(
     meta_dict = ds_obj.GetMetadata()
     rel_orbit = meta_dict.get("RELATIVE_ORBIT_NUMBER")
     orbit_dir = meta_dict.get("ORBIT_DIRECTION")
+    footprint = meta_dict.get("FOOTPRINT")  # WKT POLYGON in EPSG:4326, if available
 
     platform_match = re.search(r"(S1[A-D])_", desc)
     platform = platform_match.group(1) if platform_match else "S1"
@@ -459,6 +462,7 @@ def run_pipeline(
         relative_orbit=rel_orbit,
         orbit_direction=orbit_dir,
         platform=platform,
+        footprint=footprint,
     )
 
     # AIS Correlation

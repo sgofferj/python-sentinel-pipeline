@@ -40,13 +40,17 @@ def rebuild_inventory() -> None:
     for root, _, files in os.walk(visual_root):
         for file in files:
             if file.endswith(".json") and file != "inventory.json":
+                # Skip orphaned tmp sidecars (e.g., S1_...tif.tmp.json, S1_...tif.tmp.tif.json)
+                if ".tmp" in file:
+                    continue
                 json_path: str = os.path.join(root, file)
                 try:
                     with open(json_path, "r", encoding="utf-8") as f:
                         meta: Dict[str, Any] = json.load(f)
 
                         tif_path: str = json_path.replace(".json", ".tif")
-                        if not os.path.exists(tif_path):
+                        # Skip if tif is a tmp orphan or missing
+                        if ".tmp" in tif_path or not os.path.exists(tif_path):
                             continue
 
                         rel_path: str = os.path.relpath(tif_path, c.DIRS["OUT"])

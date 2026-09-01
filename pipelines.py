@@ -342,6 +342,7 @@ if __name__ == "__main__":
     should_finalize = bool(processed_s1 or processed_s2 or processed_s3)
     fusion_count = 0
     roi_count = 0
+    delta_count = 0
     if args.downloaded and (s1_ready or s2_ready):
         should_finalize = True
 
@@ -351,7 +352,7 @@ if __name__ == "__main__":
             fusion_count = run_correlation(FUSION_PROCESSES)
 
         inventory_manager.rebuild_inventory()
-        # ROI Stage
+        # ROI Stage (includes S1 DELTA via products[] e.g. Kronstadt with combining & notifications)
         roi_count = roi_manager.run_roi_stage()
 
         # Immediate cleanup of raw data if enabled

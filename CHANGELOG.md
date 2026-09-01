@@ -4,6 +4,26 @@ All notable changes since 01MAR2026.
 
 ---
 
+## 2026-08-31 — Sidecar Footprint Cleanup & Delta Stabilisation
+
+### Fixed
+- **Sidecar 233 s bug** (`metadata_engine.py`): downsampling factor was `int(effective_res/500)` — inverted. For S1 15 m / S2 10 m this gave `factor=1` (no downsample). `rasterio.features.shapes()` at native 15 m on a 5.5 Mpx Kronstadt delta ROI took **233 s** and produced stair-step polygons (S2 T34VFL: 1207 verts, 26 KB JSON). Fixed to `int(500/effective_res)` capped 10: 15 m→10 (150 m mask, 0.35 s vs 12 s for 1300² fragmented), 10 m→10 (100 m), 1000 m→1. Simplified geometry chain to single `buffer(0)`/`fill_holes()`/`simplify(mask_pixel*2.5)` with top-25 cap. Synthetic fragmented 1300²: 12.2 s→0.03 s.
+- **Sidecar messy footprints** (`metadata_engine.py`): added optional `footprint` param (WKT/GeoJSON/shapely, assumed EPSG:4326) to skip raster I/O entirely. Supplied footprints are cleaned without degree/metre confusion (no simplify in 4326). S2 T34VFL: 1207→7 verts, 26 KB→190 B, 0.66 s→0.53 s raster / 0.02 s with override.
+
+### Changed
+- **`functions_s1.py`/`functions_s2.py`**: capture `FOOTPRINT` WKT from `ds.GetMetadata()` at `run_pipeline()` and thread through `_render_internal()` → `generate_sidecar(footprint=…)`; fusion `correlate.py` passes `inter_geom` (4326 intersection) for `FUSED-*` products.
+- **`roi_manager.py`**: ROI crops now compute footprint as `unary_union(parent footprints) ∩ roi_poly` (shapely) and pass to sidecar — no raster read for ROI crops. Delta sidecars use down-sampled mask (now fast, 0.35 s for 2672×2079) and remain raster-derived (gated `|Δ|≥0.7 dB`).
+- **`correlate.py`**: `FUSED-RADAR-BURN`/`LIFE-MACHINE`/`TARGET-PROBE-V2` sidecars use `inter_geom` directly.
+- **Design note**: The initial 233 s + messy footprints came from re-deriving validity from rendered alpha. Ideal is to use the source valid mask (S1 `DN>0` warped alpha, S2 `B02>1`, S3 swath mask) or its polygon — now implemented as optional `footprint` param; raster fallback remains for Delta/gated products where output alpha *is* the truth.
+
+### Verified
+- S2 T34VFL 1.4 GB: 1207→7 verts, 26 KB→190 B, 0.66 s→0.53 s raster / 0.02 s with override.
+- S2 stripe vs full tile: parent footprint now correctly uses OData stripe polygon (5–11 verts, e.g. T35VPF 7 verts vs T35VNG 5 verts) instead of tile bounds.
+- S1 truncated SAFE (1.3 GB, missing central dir) still yields manifest `footPrint` and 210 GCP grid points via `7z` extraction.
+- `metadata_engine.generate_sidecar` on synthetic fragmented 1300²: 12.2 s→0.03 s; Kronstadt DELTA 2672×2079: 0.35 s raster / 0.03 s with `footprint=roi_poly`; `roi_manager --dry-run --date 2026-07-12 --roi Ust-Luga` → `100%` crop correctly.
+
+---
+
 ## 2026-08-27 — AP-GF SWIR Super-Resolution (Synthetic Pan Guided Filter)
 
 ### Added
@@ -58,12 +78,6 @@ All notable changes since 01MAR2026.
   - fi: removed redundant "SAR tutka", fixed "NIR-värivääräkuva" → "NIR-väärävärikuva", cleaned VV/VH polarisation subtitles, removed dual-option pipe in NBR, aligned AIS correlation subtitles with English
   - sv: fixed mixed-language bug "biomassa **ja**" → "biomassa **och**", corrected "krysspolarisation" → "korspolarisation", fixed "Fartygshistorik" → "Fartygskorrelation" to match English
   - de: translated FUSED subtitle from English to German, added missing hyphen in "Vertikal-Horizontal-Kreuzpolarisation"
-
----
-# Changelog
-
-All notable changes since 01MAR2026.
-
 ---
 
 ## 2026-07-07 — Box-Parse Hardening & S2 BBOX Config Fix
