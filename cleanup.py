@@ -682,6 +682,123 @@ def cleanup_delta_outputs(days: int, dry_run: bool = True) -> None:
         print(f"{count_label} {removed} {root_key} files.", flush=True)
 
 
+def cleanup_s2_filtered_redundant(dry_run: bool = True) -> None:
+    """
+    Removes unfiltered S2 visual products when a filtered counterpart
+    exists for the same scene (same tile + timestamp).
+
+    Pairs: TCI <-> TCI-GF, NIRFC <-> NIRFC-GF, AP <-> AP-GF
+    Same scene = filename prefix before product suffix, e.g.
+    T35VLF-20260821T095041Z-TCI.tif vs T35VLF-20260821T095041Z-TCI-GF.tif
+    -> scene = T35VLF-20260821T095041Z
+
+    Only affects visual/s2/* (not ROI, not Delta, not analytic).
+    When GF exists it is prioritised (higher detail), so the unfiltered
+    is redundant. This matches the per-ROI AIS GF priority.
+    """
+    pairs = [
+        ("TCI", "TCI-GF", "VIS_S2_TCI", "VIS_S2_TCI_GF"),
+        ("NIRFC", "NIRFC-GF", "VIS_S2_NIRFC", "VIS_S2_NIRFC_GF"),
+        ("AP", "AP-GF", "VIS_S2_AP", "VIS_S2_AP_GF"),
+    ]
+    action = "Dry-run: Checking" if dry_run else "Cleaning up"
+    print(f"{action} S2 unfiltered redundant (filtered exists)...", flush=True)
+    total_removed = 0
+    for base_prod, gf_prod, base_key, gf_key in pairs:
+        base_dir = c.DIRS.get(base_key, "")
+        gf_dir = c.DIRS.get(gf_key, "")
+        if not base_dir or not gf_dir:
+            continue
+        if not os.path.exists(base_dir) or not os.path.exists(gf_dir):
+            continue
+        # Collect scenes that have a filtered product
+        gf_scenes: set[str] = set()
+        for fname in os.listdir(gf_dir):
+            if not fname.endswith(".tif"):
+                continue
+            suffix = f"-{gf_prod}.tif"
+            if fname.endswith(suffix):
+                scene = fname[: -len(suffix)]
+                gf_scenes.add(scene)
+        if not gf_scenes:
+            continue
+        removed = 0
+        # Check base products against filtered set
+        for fname in list(os.listdir(base_dir)):
+            if fname.endswith(".tif") and fname.endswith(f"-{base_prod}.tif"):
+                scene = fname[: -len(f"-{base_prod}.tif")]
+                if scene in gf_scenes:
+                    base_tif = os.path.join(base_dir, fname)
+                    base_json = base_tif.replace(".tif", ".json")
+                    if dry_run:
+                        print(
+                            f"  [DRY-RUN] Would remove redundant {base_prod} (filtered {gf_prod} exists): {base_tif}",
+                            flush=True,
+                        )
+                        if os.path.exists(base_json):
+                            print(f"  [DRY-RUN] Would remove {base_json}", flush=True)
+                        removed += 1
+                    else:
+                        try:
+                            os.remove(base_tif)
+                            removed += 1
+                            print(
+                                f"  Removed redundant {base_prod}: {base_tif} (filtered {gf_prod} exists for {scene})",
+                                flush=True,
+                            )
+                        except OSError as e:
+                            print(f"  Error removing {base_tif}: {e}", flush=True)
+                        try:
+                            if os.path.exists(base_json):
+                                os.remove(base_json)
+                                print(f"  Removed sidecar {base_json}", flush=True)
+                        except OSError as e:
+                            print(f"  Error removing {base_json}: {e}", flush=True)
+                        # Remove any extra files for same scene+product (e.g. .tif.ovr, .tif.aux.xml)
+                        for extra in list(os.listdir(base_dir)):
+                            if extra.startswith(f"{scene}-{base_prod}.") and extra not in (
+                                fname,
+                                fname.replace(".tif", ".json"),
+                            ):
+                                extra_path = os.path.join(base_dir, extra)
+                                try:
+                                    os.remove(extra_path)
+                                    print(f"  Removed extra {extra_path}", flush=True)
+                                except OSError:
+                                    pass
+            elif fname.endswith(".json") and fname.endswith(f"-{base_prod}.json"):
+                # Orphan sidecar without tif (already counted via tif, but handle orphan)
+                scene = fname[: -len(f"-{base_prod}.json")]
+                if scene in gf_scenes:
+                    json_path = os.path.join(base_dir, fname)
+                    tif_path = json_path.replace(".json", ".tif")
+                    if not os.path.exists(tif_path):
+                        if dry_run:
+                            print(
+                                f"  [DRY-RUN] Would remove orphan {base_json}",
+                                flush=True,
+                            )
+                            removed += 1
+                        else:
+                            try:
+                                os.remove(json_path)
+                                removed += 1
+                                print(f"  Removed orphan {json_path}", flush=True)
+                            except OSError:
+                                pass
+        if removed:
+            print(
+                f"  {base_prod}: {removed} redundant file(s) {'would be ' if dry_run else ''}removed (filtered {gf_prod} exists).",
+                flush=True,
+            )
+            total_removed += removed
+    if total_removed == 0:
+        print("  No S2 redundant unfiltered products found.", flush=True)
+    else:
+        label = "Would remove" if dry_run else "Removed"
+        print(f"  {label} total {total_removed} S2 redundant unfiltered files.", flush=True)
+
+
 STALE_TMP_PATTERNS: List[str] = [
     "vv_raw.tif",
     "vh_raw.tif",
@@ -905,6 +1022,19 @@ def run_cleanup(
             inventory_manager.rebuild_inventory()
         else:
             print("\n[DRY-RUN] Skipping inventory rebuild.", flush=True)
+
+    # S2 filtered priority: remove unfiltered when filtered exists for same scene (post-pipeline)
+    # This is independent of age - if TCI-GF exists, TCI is redundant (same for NIRFC, AP).
+    # Matches per-ROI AIS GF priority (roi_manager.py AIS_BASE_MAP).
+    cleanup_s2_filtered_redundant(dry_run=dry_run)
+    if not dry_run:
+        # Inventory may have changed due to filtered cleanup; rebuild again (idempotent)
+        # Only rebuild if we are not already rebuilding above - but safe to rebuild unconditionally
+        # Check if any redundant files were actually removed by scanning again? Just rebuild.
+        print("\nRebuilding inventory after S2 filtered cleanup...", flush=True)
+        inventory_manager.rebuild_inventory()
+    else:
+        print("\n[DRY-RUN] Skipping inventory rebuild after S2 filtered cleanup.", flush=True)
 
     print(
         f"\n--- Cleaning up analytic outputs older than {ANALYTIC_HOURS_CUTOFF} hours ---",

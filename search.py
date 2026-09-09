@@ -157,9 +157,15 @@ def search_s2(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
         log = load_log("s2")
         if log:
             if not os.getenv("S2_STARTDATE"):
-                # Apply a 24-hour look-back to account for cataloging delays
+                # 48h look-back (was 24h) — S2 L2A PublicationDate is typically
+                # 3-6h after sensing (e.g. 2026-09-07T09:41 -> 15:23Z, 2026-09-07T09:30 -> 12:15Z)
+                # but CDSE ingestion can be later and pipeline runs are ~24h apart.
+                # 24h was enough to recover on next run, but caused split posting
+                # across two evenings (see 2026-09-07 R136 09:30 vs R036 09:41).
+                # 48h matches S3 and guarantees delayed products stay in window
+                # even if runs are 36h apart.
                 log_time = log.get("time", start_date)
-                start_date = func.offset_timestamp(log_time, hours=24)
+                start_date = func.offset_timestamp(log_time, hours=48)
             last_ids = [f["id"] for f in log.get("files", []) if "id" in f]
 
     # S2 search area is the union of all BBOXes (Suomenlahti + MK1 + home = ~800km wide).
@@ -185,18 +191,34 @@ def search_s2(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
             sortOrder=sort_order,
         )
         if status == 200:
-            box_files: List[Dict[str, Any]] = []
+            # Collect all new candidates for this box (dedup globally via seen_ids,
+            # filter already-handled via last_ids) without yet polluting seen_ids.
+            box_candidates: List[Dict[str, Any]] = []
             for feat in result["features"]:
                 if file_id := feat.get("id"):
                     if file_id in seen_ids:
                         continue
                     if USE_LOG and file_id in last_ids:
                         continue
-                    box_files.append(feat)
-                    seen_ids.add(file_id)
-                    num_files += 1
-            # Trim to the most recent max_records per box (preserves per-box quota)
-            search_result[box] = box_files[:max_records]
+                    box_candidates.append(feat)
+
+            # Per-box quota: when running incrementally (USE_LOG with history),
+            # keep *all* new candidates within the time window — trimming would
+            # discard valid low-cloud tiles when a day has two orbits (e.g.
+            # 2026-09-07 R136 09:30 =12 tiles + R036 09:41 =11 tiles =23 total,
+            # but Suomi+MK1 boxes each yield 10+10=20 with old trimming, losing 3-8).
+            # Only enforce max_records on initial backfill (no log) to bound history.
+            has_history = bool(USE_LOG and last_ids)
+            if has_history:
+                trimmed = box_candidates
+            else:
+                trimmed = box_candidates[:max_records]
+
+            # Now commit to global dedup and counts.
+            for feat in trimmed:
+                seen_ids.add(feat["id"])
+            search_result[box] = trimmed
+            num_files += len(trimmed)
 
     print(
         f"S2 search complete. Found {num_files} unique new products across {len(boxes)} areas.",
@@ -250,7 +272,7 @@ def search_s3(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
             sortOrder=sort_order,
         )
         if status == 200:
-            box_files: List[Dict[str, Any]] = []
+            box_candidates: List[Dict[str, Any]] = []
             for feat in result["features"]:
                 title = feat.get("properties", {}).get("title", "")
                 # Filter by product type in filename
@@ -266,11 +288,20 @@ def search_s3(boxes: List[str]) -> Tuple[int, Dict[str, List[Dict[str, Any]]]]:
                         continue
                     if USE_LOG and file_id in last_ids:
                         continue
-                    box_files.append(feat)
-                    seen_ids.add(file_id)
-                    num_files += 1
-            # Trim to the most recent max_records products per box
-            search_result[box] = box_files[:max_records]
+                    box_candidates.append(feat)
+
+            # Same trimming fix as S2: keep all new candidates incrementally,
+            # only enforce per-box quota on initial backfill.
+            has_history = bool(USE_LOG and last_ids)
+            if has_history:
+                trimmed = box_candidates
+            else:
+                trimmed = box_candidates[:max_records]
+
+            for feat in trimmed:
+                seen_ids.add(feat["id"])
+            search_result[box] = trimmed
+            num_files += len(trimmed)
 
     print(
         f"S3 search complete. Found {num_files} unique new products across {len(boxes)} areas.",
