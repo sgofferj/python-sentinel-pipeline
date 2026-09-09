@@ -297,6 +297,329 @@ def find_s2_excess_versions(max_versions: int) -> List[Dict[str, Any]]:
 ANALYTIC_HOURS_CUTOFF = 36
 
 
+def _get_allowed_analytic_roots() -> set[str]:
+    """
+    Returns set of allowed analytic sub-dir suffixes (e.g. 's1/vv', 's2/ndvi')
+    based on currently enabled PIPELINES / S1/S2/S3 processes.
+    Used to gate analytic retention — disabled products are pruned immediately
+    instead of after ANALYTIC_HOURS_CUTOFF.
+    """
+    allowed: set[str] = set()
+    pipelines_raw = os.getenv("PIPELINES", "S1,S2,S3")
+    pipelines = {p.strip().upper() for p in pipelines_raw.split(",") if p.strip()}
+
+    # --- S1: ANA_S1_VV/VH only needed if S1 pipeline active (DELTA re-uses it) ---
+    # If PIPELINES lacks S1, no S1 analytic needed. If S1 active but no DELTA,
+    # retention is handled per-ROI below; still mark roots allowed so age logic
+    # (S1 Delta window) applies rather than disabled pruning.
+    if "S1" in pipelines:
+        # S1_PROCESSES not strictly checked — even RATIOVVVH needs VV+VH Float32
+        # for warping. If S1 pipeline active, keep VV/VH (gated by ROI geography).
+        allowed.add("s1/vv")
+        allowed.add("s1/vh")
+        # DELTA analytic (analytic/s1/delta? actually output/analytic/s1/delta not defined in DIRS, but visual delta has analytic/s1/delta? see DIRS)
+        # Keep delta subdirs if any.
+        allowed.add("s1/delta")
+
+    # --- S2: map S2_PROCESSES + FUSION deps to ANA_S2_* ---
+    if "S2" in pipelines:
+        s2_raw = os.getenv("S2_PROCESSES", "")
+        f_raw = os.getenv("FUSION_PROCESSES", os.getenv("FUSION_PROCESSES", ""))
+        # Also handle PIPELINES-based FUSION flag
+        if "FUSION" in pipelines and not f_raw:
+            f_raw = os.getenv("FUSION_PROCESSES", "RADAR-BURN,LIFE-MACHINE")
+        # Normalise
+        def _norm(s: str) -> set[str]:
+            return {p.strip().upper().replace("-", "_") for p in s.split(",") if p.strip()}
+
+        procs = _norm(s2_raw)
+        fusion_procs = _norm(f_raw)
+
+        s2_deps = {
+            "NDVI": ["NDVI"],
+            "NDRE": ["NDRE"],
+            "NDBI": ["NDBI"],
+            "NDBI_CLEAN": ["NDBI", "NDRE"],
+            "CAMO": ["NDVI", "NDRE"],
+            "NBR": ["NBR"],
+        }
+        needed: set[str] = set()
+        for p in procs:
+            if p in s2_deps:
+                needed.update(s2_deps[p])
+            # Direct analytic request like NDVI in processes itself
+            if p in ("NDVI", "NDRE", "NDBI", "NBR"):
+                needed.add(p)
+        if "TARGET_PROBE_V2" in fusion_procs:
+            needed.update(["NDBI", "NDRE"])
+
+        for ana in needed:
+            allowed.add(f"s2/{ana.lower()}")  # e.g. s2/ndvi, s2/nbr
+
+        # Note: TCI, AP, etc. have no analytic dir in DIRS — no entry needed.
+        # If S2 pipeline active but needed empty (e.g. only TCI-GF), no s2 analytic allowed.
+
+    # --- S3: ANA_S3_BT ---
+    if "S3" in pipelines:
+        s3_raw = os.getenv("S3_PROCESSES", "BT,FIRE")
+        s3_procs = {p.strip().upper() for p in s3_raw.split(",") if p.strip()}
+        if "BT" in s3_procs:
+            allowed.add("s3/bt")
+        # S3 FIRE has no persistent Float32 analytic beyond BT (BT is source)
+
+    return allowed
+
+
+def find_disabled_analytic_files() -> List[Dict[str, Any]]:
+    """
+    Finds analytic files in dirs that are not currently enabled via
+    PIPELINES / S1/S2/S3 processes.
+    These are pruned immediately (not after 36h) — prevents keeping
+    NDBI/NBR analytic when S2_PROCESSES only asks for NDVI/NDRE, etc.
+    """
+    disabled: List[Dict[str, Any]] = []
+    analytic_root = os.path.join(c.DIRS["OUT"], "analytic")
+    if not os.path.exists(analytic_root):
+        return disabled
+    allowed = _get_allowed_analytic_roots()
+    for root, _, files in os.walk(analytic_root):
+        # Determine suffix relative to analytic_root, e.g. s2/ndvi, s1/vv
+        rel = os.path.relpath(root, analytic_root).lower().replace("\\", "/")
+        if rel == ".":
+            continue
+        # delta and s1/vv|vh are handled via S1 ROI logic, but still check allowed
+        # If suffix not in allowed and not empty, all files there are disabled
+        # Normalise: analytic/s2/ndvi -> s2/ndvi, analytic/s1/vv -> s1/vv
+        # Check if any allowed prefix matches rel
+        is_allowed = any(rel == a or rel.startswith(a + "/") for a in allowed)
+        # If allowed set empty for that sensor, e.g. S2 disabled → all s2/* disabled
+        # Example: allowed = {'s1/vv'} → s2/ndvi not allowed → disabled
+        if not is_allowed:
+            # Only flag if rel looks like a known analytic product dir
+            # (s1/*, s2/*, s3/*) to avoid deleting unexpected dirs
+            if rel.startswith(("s1/", "s2/", "s3/")):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    disabled.append(
+                        {
+                            "file_path": file_path,
+                            "file_name": file,
+                            "acq_time": parse_acquisition_time_from_filename(file)
+                            or datetime.now(timezone.utc),
+                            "reason": f"disabled analytic dir {rel}",
+                        }
+                    )
+    return disabled
+
+
+def find_s1_analytic_to_prune() -> List[Dict[str, Any]]:
+    """
+    S1 per-ROI analytic retention (smarter than keep-all->14d).
+
+    - If no ROI has DELTA enabled (functions_s1_delta._roi_wants_delta),
+      ANA_S1_VV/VH are not needed at all → prune after 1h grace.
+    - If DELTA only on Kronstadt etc., keep full-grid Float32 only when
+      scene footprint intersects a delta_roi bbox (rm.calculate_coverage),
+      else prune after 1h. Intersecting scenes kept for S1_DELTA_DAYS (14d)
+      (handled by delta window elsewhere, but we also age them here).
+    Uses visual sidecar bounds as footprint proxy; falls back to keep if
+    sidecar missing (conservative).
+    """
+    to_prune: List[Dict[str, Any]] = []
+    try:
+        import roi_manager as rm  # lazy to avoid circular import
+        import functions as func
+    except Exception:
+        return to_prune
+
+    try:
+        _, rois = rm.load_roi_config()
+    except Exception:
+        rois = []
+    delta_rois = []
+    for r in rois:
+        try:
+            # _roi_wants_delta checks products[] for DELTA
+            import functions_s1_delta as s1d
+
+            if s1d._roi_wants_delta(r):
+                delta_rois.append(r)
+        except Exception:
+            continue
+
+    # Resolve delta ROI bboxes
+    delta_bboxes: List[str] = []
+    for r in delta_rois:
+        try:
+            bbox_str = func.resolve_env_variable(r.get("bbox", ""))
+            if bbox_str and len(bbox_str.split(",")) == 4:
+                delta_bboxes.append(bbox_str)
+        except Exception:
+            continue
+
+    # If no delta ROI, all S1 analytic is not needed (1h grace)
+    no_delta = len(delta_bboxes) == 0
+    grace_cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+    delta_cutoff_days = int(os.getenv("S1_DELTA_DAYS", "14"))
+    delta_cutoff = datetime.now(timezone.utc) - timedelta(days=delta_cutoff_days)
+
+    # Need inventory for footprint lookup — use visual sidecars directly
+    analytic_roots = [c.DIRS.get("ANA_S1_VV"), c.DIRS.get("ANA_S1_VH")]
+    for a_root in analytic_roots:
+        if not a_root or not os.path.exists(a_root):
+            continue
+        for fname in os.listdir(a_root):
+            fpath = os.path.join(a_root, fname)
+            if not os.path.isfile(fpath):
+                continue
+            # Parse time for age check
+            acq = parse_acquisition_time_from_filename(fname)
+            if acq is None:
+                try:
+                    acq = datetime.fromtimestamp(os.path.getmtime(fpath), tz=timezone.utc)
+                except OSError:
+                    continue
+
+            if no_delta:
+                # No delta enabled anywhere → 1h retention
+                if acq < grace_cutoff:
+                    to_prune.append(
+                        {
+                            "file_path": fpath,
+                            "file_name": fname,
+                            "acq_time": acq,
+                            "reason": "S1 delta disabled (no ROI wants DELTA) → 1h",
+                        }
+                    )
+                continue
+
+            # Have delta ROIs — check intersection via visual sidecar
+            # Find matching visual sidecar (VV, VH, or RATIO) with same base
+            base = fname.replace(".tif", "")
+            # analytic name is S1_2026..._2026..., visual sidecars are same base under VIS_S1_*
+            visual_json = None
+            for vkey in ("VIS_S1_VV", "VIS_S1_VH", "VIS_S1_RATIO"):
+                vdir = c.DIRS.get(vkey)
+                if not vdir:
+                    continue
+                cand = os.path.join(vdir, base + ".json")
+                if os.path.exists(cand):
+                    visual_json = cand
+                    break
+                # Fallback: search by timestamp substring
+                # e.g. analytic S1_20260822T... contains timestamp, find any visual json containing it
+                try:
+                    # Extract timestamp part for fuzzy match
+                    m = re.search(r"(\d{8}T\d{6})", base)
+                    if m:
+                        ts = m.group(1)
+                        for vf in os.listdir(vdir):
+                            if ts in vf and vf.endswith(".json"):
+                                visual_json = os.path.join(vdir, vf)
+                                break
+                    if visual_json:
+                        break
+                except Exception:
+                    continue
+
+            intersects = False
+            if visual_json:
+                try:
+                    with open(visual_json, "r", encoding="utf-8") as jf:
+                        meta = json.load(jf)
+                    # Use bounds from sidecar if present, else fallback to keep
+                    bounds = meta.get("bounds")
+                    # Use rm.calculate_coverage if bounds exist, else try footprint polygon
+                    # Simpler: use rm.calculate_coverage which handles footprint union
+                    # Build a minimal layer dict for calculate_coverage
+                    # We need product field — infer from visual_json path
+                    prod = "S1-VV"
+                    if "vh" in visual_json.lower():
+                        prod = "S1-VH"
+                    elif "ratio" in visual_json.lower():
+                        prod = "S1-RATIO"
+                    layer = {"product": prod, "path": os.path.relpath(visual_json, c.DIRS["OUT"]).replace(".json", ".tif")}
+                    # Try to enrich with bounds/footprint from meta if needed for coverage
+                    # calculate_coverage reads sidecar JSON itself via path, so layer path suffices
+                    for bbox in delta_bboxes:
+                        try:
+                            cov = rm.calculate_coverage(bbox, [layer])
+                            if cov > 0:
+                                intersects = True
+                                break
+                        except Exception:
+                            # Fallback to simple bbox intersect with bounds
+                            if bounds and len(bounds) == 2:
+                                try:
+                                    b_south, b_west = bounds[0]
+                                    b_north, b_east = bounds[1]
+                                    w, s, e, n = map(float, bbox.split(","))
+                                    if not (b_east < w or b_west > e or b_north < s or b_south > n):
+                                        intersects = True
+                                        break
+                                except Exception:
+                                    continue
+                except Exception:
+                    # Conservative: if we can't read sidecar, assume intersects to avoid deleting needed
+                    intersects = True
+            else:
+                # No visual sidecar found — conservative keep for delta window
+                intersects = True
+
+            if not intersects:
+                if acq < grace_cutoff:
+                    to_prune.append(
+                        {
+                            "file_path": fpath,
+                            "file_name": fname,
+                            "acq_time": acq,
+                            "reason": "S1 analytic outside delta ROIs → 1h",
+                        }
+                    )
+            else:
+                # Intersects delta ROI — keep for S1_DELTA_DAYS
+                if acq < delta_cutoff:
+                    to_prune.append(
+                        {
+                            "file_path": fpath,
+                            "file_name": fname,
+                            "acq_time": acq,
+                            "reason": f"S1 analytic expired ({delta_cutoff_days}d) for delta ROI",
+                        }
+                    )
+
+    return to_prune
+
+
+def find_outdated_log_files(days: int = 30) -> List[Dict[str, Any]]:
+    """Finds pipeline log files older than `days` (functions.py:106 S1S2_LOGS)."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    outdated: List[Dict[str, Any]] = []
+    log_root = c.DIRS.get("S1S2_LOGS", os.path.join(c.DIRS["OUT"], "logs"))
+    if not os.path.exists(log_root):
+        return outdated
+    for fname in os.listdir(log_root):
+        if not fname.startswith("pipeline_") or not fname.endswith(".log"):
+            continue
+        fpath = os.path.join(log_root, fname)
+        # Parse timestamp from filename pipeline_2026-04-21_215440.log
+        m = re.search(r"pipeline_(\d{4}-\d{2}-\d{2}_\d{6})\.log", fname)
+        acq = None
+        if m:
+            try:
+                acq = datetime.strptime(m.group(1), "%Y-%m-%d_%H%M%S").replace(tzinfo=timezone.utc)
+            except ValueError:
+                pass
+        if acq is None:
+            try:
+                acq = datetime.fromtimestamp(os.path.getmtime(fpath), tz=timezone.utc)
+            except OSError:
+                continue
+        if acq < cutoff:
+            outdated.append({"file_path": fpath, "file_name": fname, "acq_time": acq})
+    return outdated
+
+
 def find_outdated_analytic_files(
     hours: int = ANALYTIC_HOURS_CUTOFF,
 ) -> List[Dict[str, Any]]:
@@ -310,7 +633,7 @@ def find_outdated_analytic_files(
         return outdated
 
     for root, _, files in os.walk(analytic_root):
-        # Skip Delta and S1 VV/VH analytic - needed for Delta (14d retention) handled by cleanup_delta_outputs / S1 retention
+        # Skip Delta and S1 VV/VH analytic - needed for Delta (14d retention) handled by S1 ROI logic
         if "delta" in root.lower() or "s1/vv" in root.lower() or "s1\\vv" in root.lower() or "s1/vh" in root.lower():
             continue
         for file in files:
@@ -1041,10 +1364,52 @@ def run_cleanup(
         flush=True,
     )
     outdated_analytic_list = find_outdated_analytic_files(ANALYTIC_HOURS_CUTOFF)
+    # Product-gated: disabled analytic (e.g. NDBI/NBR when only NDVI/NDRE requested)
+    disabled_analytic = find_disabled_analytic_files()
+    if disabled_analytic:
+        print(
+            f"  Found {len(disabled_analytic)} disabled analytic files (not in enabled PIPELINES/Sx_PROCESSES).",
+            flush=True,
+        )
+        outdated_analytic_list.extend(disabled_analytic)
+    # S1 per-ROI: full-grid VV/VH only for delta ROIs, else 1h; intersecting kept for S1_DELTA_DAYS
+    s1_prune = find_s1_analytic_to_prune()
+    if s1_prune:
+        # Deduplicate by file_path (may overlap with disabled)
+        seen_ana = {p["file_path"] for p in outdated_analytic_list}
+        new_s1 = [p for p in s1_prune if p["file_path"] not in seen_ana]
+        if new_s1:
+            print(f"  Found {len(new_s1)} S1 analytic files to prune (per-ROI geography).", flush=True)
+            outdated_analytic_list.extend(new_s1)
     if outdated_analytic_list:
+        # Deduplicate again before cleanup
+        uniq: dict[str, Dict[str, Any]] = {}
+        for p in outdated_analytic_list:
+            uniq[p["file_path"]] = p
+        outdated_analytic_list = list(uniq.values())
         cleanup_analytic_outputs(outdated_analytic_list, dry_run)
     else:
         print("No outdated analytic files found.", flush=True)
+
+    # Logs: pipeline_*.log in S1S2_LOGS — age out like visuals (was missing)
+    log_days = int(os.getenv("CLEANUP_LOGS_DAYS", str(days)))
+    print(f"\n--- Cleaning up log files older than {log_days} days ---", flush=True)
+    outdated_logs = find_outdated_log_files(log_days)
+    if outdated_logs:
+        action = "Would remove" if dry_run else "Removed"
+        for prod in outdated_logs:
+            fp = prod["file_path"]
+            if dry_run:
+                print(f"[DRY-RUN] Would remove log: {fp}", flush=True)
+            else:
+                try:
+                    os.remove(fp)
+                    print(f"Removed log: {fp}", flush=True)
+                except OSError as e:
+                    print(f"Error removing log {fp}: {e}", flush=True)
+        print(f"{action} {len(outdated_logs)} log files.", flush=True)
+    else:
+        print("No outdated log files found.", flush=True)
 
     print(f"--- Cleanup ({mode}) complete ---", flush=True)
 
