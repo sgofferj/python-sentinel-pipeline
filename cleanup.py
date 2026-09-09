@@ -591,6 +591,49 @@ def find_s1_analytic_to_prune() -> List[Dict[str, Any]]:
     return to_prune
 
 
+def find_enabled_s2_s3_analytic_short(hours: int = 1) -> List[Dict[str, Any]]:
+    """
+    S2/S3 enabled analytic is never used after visual generation
+    (S2 visual is PNG, S3 BT visual is used immediately for thermal_monitor
+    in same pipeline run). Keep only `hours` (1h grace for roimanager)
+    instead of 36h to avoid keeping 60d×4v s2/* Float32 for no reason.
+    Disabled dirs are already handled by find_disabled_analytic_files().
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    short: List[Dict[str, Any]] = []
+    analytic_root = os.path.join(c.DIRS["OUT"], "analytic")
+    if not os.path.exists(analytic_root):
+        return short
+    allowed = _get_allowed_analytic_roots()
+    # Only care about s2/* and s3/* that are currently allowed
+    for rel in list(allowed):
+        if not (rel.startswith("s2/") or rel.startswith("s3/")):
+            continue
+        root = os.path.join(analytic_root, rel)
+        if not os.path.exists(root):
+            continue
+        for fname in os.listdir(root):
+            fpath = os.path.join(root, fname)
+            if not os.path.isfile(fpath):
+                continue
+            acq = parse_acquisition_time_from_filename(fname)
+            if acq is None:
+                try:
+                    acq = datetime.fromtimestamp(os.path.getmtime(fpath), tz=timezone.utc)
+                except OSError:
+                    continue
+            if acq < cutoff:
+                short.append(
+                    {
+                        "file_path": fpath,
+                        "file_name": fname,
+                        "acq_time": acq,
+                        "reason": f"enabled {rel} short retention {hours}h (never used after visual)",
+                    }
+                )
+    return short
+
+
 def find_outdated_log_files(days: int = 30) -> List[Dict[str, Any]]:
     """Finds pipeline log files older than `days` (functions.py:106 S1S2_LOGS)."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
@@ -1381,6 +1424,14 @@ def run_cleanup(
         if new_s1:
             print(f"  Found {len(new_s1)} S1 analytic files to prune (per-ROI geography).", flush=True)
             outdated_analytic_list.extend(new_s1)
+    # S2/S3 enabled but never used after visual (S2 36h → 1h short)
+    s2s3_short = find_enabled_s2_s3_analytic_short(hours=1)
+    if s2s3_short:
+        seen_ana = {p["file_path"] for p in outdated_analytic_list}
+        new_s2s3 = [p for p in s2s3_short if p["file_path"] not in seen_ana]
+        if new_s2s3:
+            print(f"  Found {len(new_s2s3)} S2/S3 enabled analytic files to prune (1h short, not 36h).", flush=True)
+            outdated_analytic_list.extend(new_s2s3)
     if outdated_analytic_list:
         # Deduplicate again before cleanup
         uniq: dict[str, Dict[str, Any]] = {}
