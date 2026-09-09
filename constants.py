@@ -96,9 +96,17 @@ BAND_SW2: int = 6  # B12 (2190nm)
 DS_VV: int = 1
 DS_VH: int = 2
 
-# ----- Global Rendering Constraints --------------------------------
-S1_DB_MIN: float = -30.0
-S1_DB_MAX: float = 0.0
+# ----- S1 Backscatter Visual Stretch (fixed dB, absolute) --------------
+# Per-pol windows preserve cross-scene calibration while compressing NESZ
+# floor to black. Gemini: VV [-25,0], VH [-30,-5] (≈10.2 levels/dB over 25 dB).
+# Analytic Float32 (ANA_S1_*) remains unclipped; this only affects 8-bit PNG.
+S1_VV_DB_MIN: float = float(os.getenv("S1_VV_DB_MIN", "-25.0"))
+S1_VV_DB_MAX: float = float(os.getenv("S1_VV_DB_MAX", "0.0"))
+S1_VH_DB_MIN: float = float(os.getenv("S1_VH_DB_MIN", "-30.0"))
+S1_VH_DB_MAX: float = float(os.getenv("S1_VH_DB_MAX", "-5.0"))
+# Legacy aliases — kept for external imports, map to VV window
+S1_DB_MIN: float = S1_VV_DB_MIN
+S1_DB_MAX: float = S1_VV_DB_MAX
 
 S1_RATIO_MIN: float = 0.5
 S1_RATIO_MAX: float = 5.0

@@ -76,15 +76,23 @@ def get_life_machine_legend():
 
 
 def get_standard_sar_legend(pol="VH"):
-    """Returns HTML for standard grayscale dB products."""
+    """Returns HTML for standard grayscale dB products (per-pol fixed bounds)."""
+    pol_up = pol.upper()
+    if pol_up == "VH":
+        dmin, dmax = c.S1_VH_DB_MIN, c.S1_VH_DB_MAX
+    elif pol_up == "VV":
+        dmin, dmax = c.S1_VV_DB_MIN, c.S1_VV_DB_MAX
+    else:
+        dmin, dmax = c.S1_DB_MIN, c.S1_DB_MAX
     return f"""
     <div class="legend-box" style="padding: 10px; background: rgba(0,0,0,0.8); color: white; border-radius: 5px; font-family: monospace; font-size: 12px;">
-        <div style="font-weight: bold; margin-bottom: 5px; color: #ffeb3b;">SAR {pol} (Sigma0 dB)</div>
+        <div style="font-weight: bold; margin-bottom: 5px; color: #ffeb3b;">SAR {pol_up} (Sigma0 dB)</div>
         <div style="height: 12px; width: 200px; background: linear-gradient(to right, #000, #fff); border: 1px solid #444;"></div>
         <div style="display: flex; justify-content: space-between; width: 200px; margin-top: 2px;">
-            <span>{c.S1_DB_MIN}dB</span>
-            <span>{c.S1_DB_MAX}dB</span>
+            <span>{dmin:.0f}dB</span>
+            <span>{dmax:.0f}dB</span>
         </div>
+        <div style="margin-top: 4px; font-size: 10px; color: #aaa;">Fixed {dmax-dmin:.0f} dB window, {255/(dmax-dmin):.1f} lvls/dB. Analytic Float32 unclipped.</div>
     </div>
     """
 

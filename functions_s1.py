@@ -184,10 +184,22 @@ def _render_internal(
 ) -> None:
     """Macro-block threaded renderer for maximum GPU saturation using Double Buffering."""
     func.perf_logger.start_step("S1 Single-Pass Render", use_gpu=True)
-    print(f"Starting Prefetch S1 Render (Block: {c.BLOCK_SIZE})...", flush=True)
+    print(
+        f"Starting Prefetch S1 Render (Block: {c.BLOCK_SIZE}) "
+        f"VV [{c.S1_VV_DB_MIN:.0f},{c.S1_VV_DB_MAX:.0f}] "
+        f"VH [{c.S1_VH_DB_MIN:.0f},{c.S1_VH_DB_MAX:.0f}] dB",
+        flush=True,
+    )
 
-    db_min: float = c.S1_DB_MIN
-    db_range: float = c.S1_DB_MAX - c.S1_DB_MIN
+    # Per-pol fixed dB windows (absolute, not percentile) — preserves cross-scene calibration.
+    # VH is ~10 dB dimmer than VV; its NESZ -22/-24 dB is now correctly removed (s1_calibrator eta=range*azimuth),
+    # so -30→-5 maps water floor to black and uses full 0-255 for typical VH -30..-10.
+    vv_db_min: float = c.S1_VV_DB_MIN
+    vv_db_max: float = c.S1_VV_DB_MAX
+    vh_db_min: float = c.S1_VH_DB_MIN
+    vh_db_max: float = c.S1_VH_DB_MAX
+    vv_db_range: float = vv_db_max - vv_db_min
+    vh_db_range: float = vh_db_max - vh_db_min
     ratio_min: float = c.S1_RATIO_MIN
     ratio_range: float = c.S1_RATIO_MAX - c.S1_RATIO_MIN
 
@@ -292,7 +304,9 @@ def _render_internal(
         t_read.start()
         t_write.start()
 
-        def db_scale(arr: np.ndarray) -> np.ndarray:
+        def db_scale(arr: np.ndarray, db_min: float, db_max: float) -> np.ndarray:
+            """Fixed-bound dB → 0-255 (absolute, not percentile)."""
+            db_range = db_max - db_min
             m = arr > 0
             db_vals = np.full_like(arr, db_min, dtype=np.float32)
             db_vals[m] = 10 * np.log10(arr[m])
@@ -321,7 +335,8 @@ def _render_internal(
                     results["VV_ANA"] = vv_denoised
                     results["VH_ANA"] = vh_denoised
 
-                    s_vv, s_vh = db_scale(vv_denoised), db_scale(vh_denoised)
+                    s_vv = db_scale(vv_denoised, vv_db_min, vv_db_max)
+                    s_vh = db_scale(vh_denoised, vh_db_min, vh_db_max)
                     m_norm = alpha.astype(float) / 255.0
 
                     def apply_mask(img):

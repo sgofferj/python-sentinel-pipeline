@@ -594,7 +594,7 @@ def fuse_life_machine(
                         vh_g = cp.array(vh_data)
                         vh_db_g = 10 * cp.log10(cp.maximum(vh_g, 1e-9))
                         vh_vis_g = cp.clip(
-                            (vh_db_g - c.S1_DB_MIN) / (c.S1_DB_MAX - c.S1_DB_MIN) * 255,
+                            (vh_db_g - c.S1_VH_DB_MIN) / (c.S1_VH_DB_MAX - c.S1_VH_DB_MIN) * 255,
                             0,
                             255,
                         )
@@ -603,7 +603,7 @@ def fuse_life_machine(
                     else:
                         vh_db = 10 * np.log10(np.maximum(vh_data, 1e-9))
                         vh_vis = np.clip(
-                            (vh_db - c.S1_DB_MIN) / (c.S1_DB_MAX - c.S1_DB_MIN) * 255,
+                            (vh_db - c.S1_VH_DB_MIN) / (c.S1_VH_DB_MAX - c.S1_VH_DB_MIN) * 255,
                             0,
                             255,
                         )
